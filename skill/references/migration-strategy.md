@@ -1,15 +1,15 @@
-# 既存コンテンツ共存戦略
+# 3フォルダ構成
 
-既存ファイルは移動・リネームしない。
+既存ファイルは全てmain/に格納済み。
 
+- main/ → ユーザー既存コンテンツ（AI読取専用）
 - raw/ → 新規素材専用
 - wiki/ → AI生成専用
-- 既存ファイルはingestで段階的に処理可能
 
 **取込例**:
 ```
-/wiki-ingest path="Claude/Claude Code.md"
-/wiki-ingest path="LLM/"
+/wiki-ingest path="main/Claude/Claude Code.md"
+/wiki-ingest path="main/LLM/"
 ```
 
-原本は元の場所に残る。wikiから[[wikilink]]で参照可能。
+原本はmain/に残る。wikiから[[wikilink]]で参照可能。

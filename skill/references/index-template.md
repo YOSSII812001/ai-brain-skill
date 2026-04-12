@@ -2,23 +2,23 @@
 
 ```markdown
 ---
-title: "Knowledge Base Index"
+title: "ナレッジベース目次"
 date_created: YYYY-MM-DD
 date_modified: YYYY-MM-DD
 type: index
 ---
 # ナレッジベース目次
 
-## Concepts
+## 概念
 - [[concept-name]] — 1行要約
 
-## Entities
+## エンティティ
 - [[entity-name]] — 1行要約
 
-## Sources
+## ソース
 - [[author-year-title]] — 1行要約
 
-## Syntheses
+## 統合分析
 - [[synthesis-name]] — 1行要約
 ```
 

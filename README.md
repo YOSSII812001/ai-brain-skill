@@ -8,7 +8,8 @@ Build a personal knowledge base that **gets smarter the more you use it** -- pow
 
 ```
 Obsidian Vault
-├── raw/           <- Source materials (AI read-only)
+├── main/          <- Your existing content (AI read-only)
+├── raw/           <- New source materials (AI read-only)
 │   ├── articles/  papers/  repos/  datasets/  assets/
 ├── wiki/          <- AI-maintained knowledge layer
 │   ├── index.md  log.md
@@ -22,9 +23,10 @@ Obsidian Vault
 
 | Layer | Path | Role |
 |-------|------|------|
-| Layer 1 | `raw/` | Source materials. AI reads but never modifies |
-| Layer 2 | `wiki/` | AI-maintained knowledge. Auto-generated and maintained |
-| Layer 3 | `CLAUDE.md` | Schema file defining structure, naming, operations |
+| Layer 1 | `main/` | Your existing content. AI reads but never modifies |
+| Layer 2 | `raw/` | New source materials. AI reads but never modifies |
+| Layer 3 | `wiki/` | AI-maintained knowledge. Auto-generated and maintained |
+| Schema | `CLAUDE.md` | Schema file defining structure, naming, operations |
 
 ### 4 Operation Cycles
 

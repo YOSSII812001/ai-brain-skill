@@ -2,7 +2,7 @@
 
 ```markdown
 ---
-title: "Operation Log"
+title: "操作ログ"
 date_created: YYYY-MM-DD
 date_modified: YYYY-MM-DD
 type: log
