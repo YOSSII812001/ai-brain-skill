@@ -4,6 +4,7 @@
 wikiページの本文・要約・フロントマターのtitle/summaryは全て日本語で記述する。
 
 ## 構造
+- `inbox/` — バッチ投入バッファ。ユーザーが事前配置、処理後に空になる
 - `main/` — ユーザーの既存コンテンツ。AIは読むが変更しない
 - `raw/` — 新規ソース素材。AIは読むが変更しない
   - articles/, papers/, repos/, datasets/, assets/
