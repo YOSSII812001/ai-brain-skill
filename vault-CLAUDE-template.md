@@ -35,11 +35,17 @@ title（日本語）, date_created, date_modified, summary（日本語）, tags,
 - 未解決[[wikilink]]禁止 → スタブを即作成
 - 矛盾は⚠️付きで両ソース引用
 
+## 環境値
+- `VAULT_NAME`: `<VAULT_NAME>`
+- `VAULT_PATH`: `<VAULT_PATH>`
+- `OBSIDIAN_CLI_PATH`: `<OBSIDIAN_CLI_PATH>`
+- `AI_BRAIN_SKILL_PATH`: `<AI_BRAIN_SKILL_PATH>`
+
 ## ツール
 Obsidian CLIで全vault操作:
 ```
-OB="/c/Users/zooyo/Downloads/Obsidian/Obsidian.com"
-V="vault=ytakeshita"
+OB="<OBSIDIAN_CLI_PATH>"
+V="vault=<VAULT_NAME>"
 ```
 
 ## ログ

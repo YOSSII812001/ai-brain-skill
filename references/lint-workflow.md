@@ -11,11 +11,26 @@
    - 命名違反 → リネーム提案
 4. 変更なし時も定期チェック（下記）は実行
 
+## 同時実行ロック
+
+開始時:
+
+1. `wiki/_meta/` を作成する。
+2. `wiki/_meta/.lock` が30分以内なら実行をスキップする。
+3. 30分を超えた lock は stale とみなし、`wiki/_meta/.lock` だけを削除する。
+4. lock には `operation`, `started_at`, `agent`, `host`, `pid` を記録する。
+
+終了時:
+
+- 成功/失敗に関わらず `wiki/_meta/.lock` だけを削除する。
+- `wiki/` 外のファイルは削除しない。
+
 ## 定期ヘルスチェック（変更なし時）
 
 5. 孤立ページ → リンク追加or統合（obsidian-cli orphans）
 6. 陳腐化(>6ヶ月) → status: stale
 7. 矛盾検出 → ⚠️フラグ
+8. 繰り返し構造問題 → `references/self-improvement-workflow.md` に従い改善候補をドラフト化
 
 ## フルlint（`/wiki-lint all`）
 

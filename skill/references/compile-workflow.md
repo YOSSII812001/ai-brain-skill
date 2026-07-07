@@ -10,6 +10,20 @@
 4. 変更なし → スキップ（ScheduleWakeupのみ）
 5. 変更あり → 以下のフルフローの該当ステップのみ実行
 
+## 同時実行ロック
+
+開始時:
+
+1. `wiki/_meta/` を作成する。
+2. `wiki/_meta/.lock` が30分以内なら実行をスキップする。
+3. 30分を超えた lock は stale とみなし、`wiki/_meta/.lock` だけを削除する。
+4. lock には `operation`, `started_at`, `agent`, `host`, `pid` を記録する。
+
+終了時:
+
+- 成功/失敗に関わらず `wiki/_meta/.lock` だけを削除する。
+- `wiki/` 外のファイルは削除しない。
+
 ## フルcompile（初回 or `/wiki-compile all`）
 
 1. wiki/sources/の新規・更新ページを走査
