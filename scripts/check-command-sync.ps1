@@ -24,8 +24,12 @@ if ([string]::IsNullOrWhiteSpace($TargetDirectory)) {
 
 function Normalize-CommandContent {
   param([string]$Content)
+  $targetVaultLabel = ([string][char]0x5BFE) + ([string][char]0x8C61) + 'vault'
+  $targetVaultPattern = [regex]::Escape($targetVaultLabel) + ':\s*.+'
+
   $text = $Content -replace "`r`n?", "`n"
-  $text = $text -replace '対象vault:\s*.+', '対象vault: <VAULT_NAME>'
+  $text = $text -replace "^\uFEFF", ''
+  $text = $text -replace $targetVaultPattern, 'target-vault: <VAULT_NAME>'
   $text = $text -replace '~/.claude/skills/ai-brain', '~/.skills/ai-brain'
   $text = $text -replace '~/.codex/skills/ai-brain', '~/.skills/ai-brain'
   $text = $text -replace 'C:\\Users\\[^\\]+\\.claude\\skills\\ai-brain', '~/.skills/ai-brain'
@@ -52,8 +56,10 @@ foreach ($repoFile in $repoFiles) {
     continue
   }
 
-  $repoText = Normalize-CommandContent (Get-Content -LiteralPath $repoFile.FullName -Raw)
-  $targetText = Normalize-CommandContent (Get-Content -LiteralPath $targetFile -Raw)
+  $repoContent = Get-Content -LiteralPath $repoFile.FullName -Raw -Encoding UTF8
+  $targetContent = Get-Content -LiteralPath $targetFile -Raw -Encoding UTF8
+  $repoText = Normalize-CommandContent -Content $repoContent
+  $targetText = Normalize-CommandContent -Content $targetContent
   if ($repoText -ne $targetText) {
     [void]$failures.Add("Command drift: $($repoFile.Name)")
   }

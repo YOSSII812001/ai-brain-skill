@@ -48,6 +48,9 @@ The script copies:
 - `vault/CLAUDE.md` to the vault root.
 - scheduled compile/lint scripts to the target scripts directory.
 
+`-Apply` overwrites those target files, including the vault root `CLAUDE.md`.
+Keep a backup first if the vault already has local instructions.
+
 It replaces placeholders in copied files:
 
 - `<YOUR_VAULT_NAME>`
