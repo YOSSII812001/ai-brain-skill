@@ -22,10 +22,18 @@ Obsidian vault上にKarpathy提唱のAI外部脳システムを構築・運用�
 
 ## 環境情報
 
-- **Vault名**: ytakeshita
-- **Vaultパス**: `C:\Users\zooyo\Documents\Obsidian\ytakeshita`
-- **Obsidian CLI**: `"/c/Users/zooyo/Downloads/Obsidian/Obsidian.com"`
-- **Vault CLAUDE.md**: vault root に配置済み
+環境依存値の正典は vault root の `CLAUDE.md`。
+詳細は `references/environment-config.md` を Read ツールで読み込むこと。
+
+必須値:
+- **Vault名**: vault schema の `VAULT_NAME`
+- **Vaultパス**: vault schema の `VAULT_PATH`
+- **inbox**: `VAULT_PATH\inbox\`
+- **Obsidian CLI**: vault schema の `OBSIDIAN_CLI_PATH`
+- **Skill path**: インストール先の `AI_BRAIN_SKILL_PATH`
+
+公開版の `SKILL.md` は、ユーザー固有の Obsidian 実行パスを固定しない。
+初回セットアップ時に `vault/CLAUDE.md` と command files のプレースホルダを置換する。
 
 ## セッション初期化
 
@@ -124,21 +132,21 @@ vault操作はobsidian-cliスキルを輸送層として使用する。
 **安全ルール**: 書き込み先は `wiki/` または `raw/` 配下のみ。既存フォルダへの書き込み禁止。`inbox/` は読み取り＋処理後削除のみ。
 **機密情報**: raw/に個人情報・認証情報を含むファイルを投入しないこと。要約経由で拡散するリスクあり。
 
-主要コマンド:
-```bash
-OB="/c/Users/zooyo/Downloads/Obsidian/Obsidian.com"
-V="vault=ytakeshita"
+主要コマンド例:
+```powershell
+$ObsidianCli = "<OBSIDIAN_CLI_PATH>"
+$VaultArg = "vault=<VAULT_NAME>"
 
 # 読み書き
-$OB read path="wiki/index.md" $V
-$OB create path="wiki/concepts/example.md" content="..." $V
-$OB append file="wiki/log" content="..." $V
+& $ObsidianCli read "path=wiki/index.md" $VaultArg
+& $ObsidianCli create "path=wiki/concepts/example.md" 'content=...' $VaultArg
+& $ObsidianCli append "file=wiki/log" 'content=...' $VaultArg
 
 # 検索
-$OB search query="キーワード" path="wiki/" $V
-$OB links file="wiki/concepts/example" $V
-$OB backlinks file="wiki/concepts/example" $V
-$OB orphans $V
+& $ObsidianCli search "query=キーワード" "path=wiki/" $VaultArg
+& $ObsidianCli links "file=wiki/concepts/example" $VaultArg
+& $ObsidianCli backlinks "file=wiki/concepts/example" $VaultArg
+& $ObsidianCli orphans $VaultArg
 ```
 
 ## 操作完了チェックリスト
@@ -164,73 +172,13 @@ $OB orphans $V
 ## ループ運用（/loop対応）
 
 `/loop /wiki-compile` または `/loop /wiki-lint` でセルフペースの自動運用が可能。
-各tickはSKILL.mdのセッション初期化から始まるため、コンテキスト不要で自己完結する。
-
-### 共通: 変更検出ロジック
-
-1. `wiki/log.md` を Read し、最新の該当操作（compile or lint）のタイムスタンプを取得
-2. Bashで `find wiki/ -name "*.md" -newer <前回log時刻の基準ファイル>` を実行
-3. 変更ファイルリストが空か否かで分岐
-
-### セルフペースcompile
-
-**起動**: `/loop /wiki-compile`
-**ScheduleWakeupのprompt**: `/wiki-compile`（毎tick同一文字列で継続）
-
-**各tickのフロー**:
-1. セッション初期化（index.md + log.md Read）
-2. 変更検出: wiki/sources/ の前回compile以降の更新を検出
-3. 昇格候補: concepts/ の stub で sources数 >= 2 のものを検出
-4. 分岐:
-   - 変更あり → 差分compile（昇格・wikilink・syntheses・index再構築・log記録）
-   - 変更なし → スキップ（log記録不要）
-5. ScheduleWakeup で次tickスケジュール
-
-**間隔決定**:
-| 状況 | delaySeconds | 理由 |
-|------|-------------|------|
-| compile実行あり（ファイル変更した） | 120 | compile自体の変更が追加差分を生む可能性 |
-| source更新あり・昇格未達 | 180 | 近い将来の昇格に備え短めに待機 |
-| 変更なし | 1200 | 20分後に再チェック |
-
-### セルフペースlint
-
-**起動**: `/loop /wiki-lint`
-**ScheduleWakeupのprompt**: `/wiki-lint`
-
-**各tickのフロー**:
-1. セッション初期化（index.md + log.md Read）
-2. 変更検出: wiki/ 配下全体の前回lint以降の更新を検出
-3. 分岐:
-   - 変更あり → 変更ファイル対象の差分lint（未解決wikilink・frontmatter・デッドエンド・命名規則）
-   - 変更なし → 定期ヘルスチェックのみ（孤立ページ・陳腐化 >6ヶ月）
-4. log.mdに記録（問題なければ「lint: clean」）
-5. ScheduleWakeup で次tickスケジュール
-
-**間隔決定**:
-| 状況 | delaySeconds | 理由 |
-|------|-------------|------|
-| lint修正実行あり | 120 | 修正の副作用チェック |
-| 変更あり・問題なし | 270 | キャッシュ内で次を待つ |
-| 変更なし・定期clean | 1800 | 30分後に定期チェック |
-
-### 並行運用ガイド
-
-compileを先に起動し、5-10分後にlintを起動する。
-lintはcompileの出力をチェックする側なので、この順序が自然。
-
-```
-セッション1: /loop /wiki-compile
-セッション2: /loop /wiki-lint    ← 5-10分後
-```
-
-注意: 両者が同時にlog.mdへ追記する可能性があるが、追記操作のみなので競合リスクは低い。
-index.mdの再構築はcompileのみが行う（lintは変更しない）。
+詳細は `references/loop-operation.md` を Read ツールで読み込むこと。
+本体には起動条件だけを残し、間隔決定や変更検出の詳細は reference に集約する。
 
 ## 関連スキル
 
 - **obsidian-cli** — vault読み書きの基盤（輸送層）
-- **skill-improve** — スキル品質管理
+- **skill-improve** — 繰り返し発生する構造問題をスキル改善候補へ戻す
 
 ## 改訂履歴
 

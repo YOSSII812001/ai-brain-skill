@@ -10,8 +10,8 @@
 4. 全ファイル処理後にwiki/index.mdを一括再構築
 5. wiki/log.mdに一括記録（ingest-inbox, N files）
 6. **【必須・スキップ厳禁】成功ファイルのinbox削除**:
-   - Bashの`rm`コマンドで成功ファイルをinbox/から個別削除
-   - Globツールでinbox/を再スキャンし、残留ファイル数を確認
+   - PowerShell `Remove-Item -LiteralPath` で成功ファイルをinbox/から個別削除
+   - `Get-ChildItem -LiteralPath <vault>\inbox` でinbox/を再スキャンし、残留ファイル数を確認
    - 全成功の場合: inbox/内が0件であることを確認
    - 一部失敗の場合: 残留ファイルが失敗分のみであることを確認
 7. **完了ゲートチェック（全項目YES必須。1つでもNOなら戻って対処）**:
@@ -19,7 +19,7 @@
    - [ ] wiki/concepts/ に抽出した概念ページが存在するか
    - [ ] wiki/index.md に新規エントリが追加されたか
    - [ ] wiki/log.md に操作記録が追記されたか
-   - [ ] inbox/から成功ファイルが削除されたか（Glob確認済み）
+   - [ ] inbox/から成功ファイルが削除されたか（再スキャン確認済み）
 8. 完了サマリ報告（成功/失敗件数、生成ページ一覧、inbox残留ファイル数）
 
 ※ index.md/log.mdはファイルごとでなく最後に1回更新（I/O削減）

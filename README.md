@@ -4,6 +4,21 @@ Karpathy's "AI External Brain" system implemented as a Claude Code skill with Ob
 
 Build a personal knowledge base that **gets smarter the more you use it** -- powered by Claude Code + Obsidian.
 
+## What Is Better Now
+
+This release makes the skill easier to install, safer to run, and harder to accidentally drift out of sync.
+
+| Area | Before | Now | Why it matters |
+|------|--------|-----|----------------|
+| Setup | Users had to copy files and fill paths by hand | `scripts/setup-ai-brain.ps1` prints a dry-run plan, replaces placeholders, and copies the right files only when `-Apply` is passed | You can review every change before anything touches your local Claude, Codex, or vault files |
+| Obsidian paths | A user-specific Obsidian path could leak into the public skill | Environment values live in the vault `CLAUDE.md` and setup replaces placeholders | The public skill works on other machines without editing six separate places |
+| Command updates | Installed `/wiki-*` commands could silently become stale | `scripts/check-command-sync.ps1` compares installed commands with the repository version | You can detect old local commands before they confuse the workflow |
+| Reference files | Root references and packaged skill references could drift apart | `scripts/check-reference-parity.ps1` verifies both copies match | Fixes made for real use are not lost in the next distribution |
+| Scheduled runs | Task Scheduler setup was described but not bundled | Compile and lint runner scripts plus `install-scheduled-tasks.ps1` are included | Automated maintenance can be installed from the repo instead of recreated by hand |
+| Lock files | Stale `wiki/_meta/.lock` handling was only loosely described | Compile and lint docs now say when to skip, when to treat a lock as stale, and what file may be removed | Concurrent runs are safer and recovery is clearer |
+| Validation | Broken links, stale strings, script syntax, and file-count drift were manual checks | `scripts/validate-repo.ps1` and GitHub Actions run the same lightweight checks | Pull requests get a repeatable safety net |
+| Self-improvement | Lint findings stopped at vault cleanup | Repeated structural findings can now become skill improvement drafts | The skill can improve its own instructions instead of only patching one note |
+
 ## Architecture
 
 ```
@@ -48,33 +63,20 @@ Plus `/wiki-init` for initial scaffolding.
 
 ### Quick Install
 
-1. **Copy skill files:**
-```bash
-# Copy SKILL.md and references/
-cp -r skill/SKILL.md ~/.claude/skills/ai-brain/SKILL.md
-cp -r skill/references/ ~/.claude/skills/ai-brain/references/
+1. **Clone this repository.**
 
-# Copy slash commands
-cp commands/wiki-*.md ~/.claude/commands/
-
-# Copy vault schema (adjust path to your vault)
-cp vault/CLAUDE.md /path/to/your/obsidian/vault/CLAUDE.md
+2. **Give your AI assistant the vault path and run a dry run:**
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
+  -VaultPath "C:\path\to\your\Obsidian Vault" `
+  -VaultName "Obsidian Vault" `
+  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe"
 ```
 
-2. **Configure paths** -- Edit these files to match your environment:
-   - `skill/SKILL.md`: Update vault path and Obsidian CLI binary path
-   - `vault/CLAUDE.md`: Update Obsidian CLI path
-   - `commands/wiki-*.md`: Update SKILL.md path if needed, and replace any `<YOUR_VAULT_NAME>` placeholder with your Obsidian vault name.
+The setup script is dry-run by default. Add `-Apply` only after the printed plan looks right.
+See [SETUP.md](SETUP.md) for the AI-assisted setup contract.
 
-   Example:
-   ```bash
-   VAULT_NAME="Obsidian Vault"
-   for file in ~/.claude/commands/wiki-*.md; do
-     sed -i.bak "s/<YOUR_VAULT_NAME>/${VAULT_NAME}/g" "$file" && rm "$file.bak"
-   done
-   ```
-
-3. **Initialize:**
+3. **Initialize the vault:**
 ```
 /wiki-init
 ```
@@ -85,10 +87,15 @@ This scaffolds `raw/` and `wiki/` folders in your vault.
 
 ```
 ai-brain-skill/
+├── SETUP.md                         # AI-assisted setup contract
+├── .github/
+│   └── workflows/
+│       └── validate.yml             # Lightweight repository validation
 ├── skill/
 │   ├── SKILL.md                    # Main skill file
-│   └── references/                 # 19 micro-reference files (< 500 chars each)
+│   └── references/                 # 22 micro-reference files
 │       ├── schema-overview.md      # 3-layer structure definition
+│       ├── environment-config.md   # Environment source-of-truth rules
 │       ├── raw-layer-rules.md      # raw/ directory rules
 │       ├── wiki-layer-structure.md # wiki/ subdirectory listing
 │       ├── naming-conventions.md   # Kebab-case, author-year format
@@ -101,6 +108,8 @@ ai-brain-skill/
 │       ├── compile-workflow.md     # Compile cycle steps
 │       ├── query-workflow.md       # Query cycle steps
 │       ├── lint-workflow.md        # Lint cycle steps
+│       ├── loop-operation.md       # /loop self-paced operation
+│       ├── self-improvement-workflow.md # Skill improvement draft flow
 │       ├── init-workflow.md        # Init/scaffold steps
 │       ├── index-template.md       # wiki/index.md template
 │       ├── log-template.md         # wiki/log.md template
@@ -114,6 +123,14 @@ ai-brain-skill/
 │   ├── wiki-compile.md             # /wiki-compile command
 │   ├── wiki-query.md               # /wiki-query <question> command
 │   └── wiki-lint.md                # /wiki-lint command
+├── scripts/
+│   ├── setup-ai-brain.ps1          # Dry-run-first installer
+│   ├── validate-repo.ps1           # Local and CI validation
+│   ├── check-command-sync.ps1      # Installed command drift check
+│   ├── check-reference-parity.ps1  # root vs distribution reference check
+│   ├── install-scheduled-tasks.ps1 # Task Scheduler registration helper
+│   ├── wiki-compile-scheduled.ps1  # Scheduled /wiki-compile runner
+│   └── wiki-lint-scheduled.ps1     # Scheduled /wiki-lint runner
 └── vault/
     └── CLAUDE.md                   # Vault schema file template
 ```
@@ -169,30 +186,19 @@ Both tasks use **diff mode** by default — only processing changes since the la
 
 ### Setup
 
-1. **Copy the scheduler scripts:**
+1. **Dry-run task registration:**
 ```powershell
-# Scripts are in ~/.claude/scripts/ (not in this repo — create them locally)
-# wiki-compile-scheduled.ps1
-# wiki-lint-scheduled.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-scheduled-tasks.ps1 `
+  -VaultPath "C:\path\to\your\Obsidian Vault" `
+  -SkillPath "$HOME\.claude\skills\ai-brain"
 ```
 
-2. **Register with Task Scheduler:**
+2. **Apply after the dry-run output looks right:**
 ```powershell
-# Compile: every 3 hours
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument '-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\<YOU>\.claude\scripts\wiki-compile-scheduled.ps1"'
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddHours(9) `
-  -RepetitionInterval (New-TimeSpan -Hours 3) -RepetitionDuration (New-TimeSpan -Days 365)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-Register-ScheduledTask -TaskName 'Claude Wiki Compile' -TaskPath '\Claude Code\' `
-  -Action $action -Trigger $trigger -Settings $settings -Force
-
-# Lint: daily at 17:00
-$action2 = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument '-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\<YOU>\.claude\scripts\wiki-lint-scheduled.ps1"'
-$trigger2 = New-ScheduledTaskTrigger -Daily -At '17:00'
-Register-ScheduledTask -TaskName 'Claude Wiki Lint' -TaskPath '\Claude Code\' `
-  -Action $action2 -Trigger $trigger2 -Settings $settings -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-scheduled-tasks.ps1 `
+  -VaultPath "C:\path\to\your\Obsidian Vault" `
+  -SkillPath "$HOME\.claude\skills\ai-brain" `
+  -Apply
 ```
 
 3. **Manage tasks:**
@@ -231,9 +237,9 @@ Logs are written to `~/.claude/logs/` with daily rotation:
 ~/.claude/logs/wiki-lint-2026-04-13.log
 ```
 
-### Important: PowerShell BOM Encoding
+### PowerShell Encoding
 
-The scheduler scripts **must** be saved with UTF-8 BOM encoding. Without BOM, PowerShell misparses Japanese characters and variable interpolation. If you recreate the scripts, ensure BOM is present:
+The bundled scheduler scripts use ASCII-safe text, so they run without a BOM requirement. If you localize the scripts with Japanese text, save them as UTF-8 with BOM:
 ```powershell
 # Add BOM to an existing script
 $bytes = [System.IO.File]::ReadAllBytes($path)
@@ -241,17 +247,33 @@ $bom = [byte[]](0xEF, 0xBB, 0xBF)
 [System.IO.File]::WriteAllBytes($path, $bom + $bytes)
 ```
 
+## Validation
+
+Run the local validator before opening a pull request:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-repo.ps1
+```
+
+The validator checks reference parity, README file counts, command count, stale forbidden strings, PowerShell syntax, the workflow file, and internal Markdown links.
+
+To check installed command drift:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-command-sync.ps1 -Target claude
+```
+
 ## Design Principles
 
 - **All references are dynamically loaded** -- no static `@import`, minimizing context window usage
-- **Each reference file < 500 characters** -- micro-files loaded only when needed
+- **Reference files stay small and focused** -- micro-files loaded only when needed
 - **Existing vault content is preserved** -- coexistence mode, no migration required
 - **obsidian-cli as transport layer** -- the skill delegates all vault I/O to obsidian-cli
 - **YAML frontmatter on all wiki pages** -- enables structured queries and lint checks
 
 ## Credits
 
-Based on the "AI External Brain" concept by [Andrej Karpathy](https://x.com/karpaborern), detailed guide by [@hooeem](https://x.com/hooeem/status/2041196025906418094), and Japanese coverage by [@ClaudeCode_love](https://x.com/ClaudeCode_love/status/2042886840177557533).
+Based on the "LLM Wiki" / AI External Brain concept by [Andrej Karpathy](https://x.com/karpathy) ([original gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)), detailed guide by [@hooeem](https://x.com/hooeem/status/2041196025906418094), and Japanese coverage by [@ClaudeCode_love](https://x.com/ClaudeCode_love/status/2042886840177557533).
 
 ## License
 
