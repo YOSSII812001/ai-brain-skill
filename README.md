@@ -33,7 +33,7 @@ Obsidian Vault
 | Cycle | Command | Description |
 |-------|---------|-------------|
 | **Ingest** | `/wiki-ingest` | Process new source materials into wiki |
-| **Compile** | `/wiki-compile** | Build/update wiki pages, maintain index |
+| **Compile** | `/wiki-compile` | Build/update wiki pages, maintain index |
 | **Query** | `/wiki-query` | Cross-reference wiki, synthesize cited answers |
 | **Lint** | `/wiki-lint` | Health check: fix broken links, stale content |
 
@@ -64,7 +64,15 @@ cp vault/CLAUDE.md /path/to/your/obsidian/vault/CLAUDE.md
 2. **Configure paths** -- Edit these files to match your environment:
    - `skill/SKILL.md`: Update vault path and Obsidian CLI binary path
    - `vault/CLAUDE.md`: Update Obsidian CLI path
-   - `commands/wiki-*.md`: Update SKILL.md path if needed
+   - `commands/wiki-*.md`: Update SKILL.md path if needed, and replace any `<YOUR_VAULT_NAME>` placeholder with your Obsidian vault name.
+
+   Example:
+   ```bash
+   VAULT_NAME="Obsidian Vault"
+   for file in ~/.claude/commands/wiki-*.md; do
+     sed -i.bak "s/<YOUR_VAULT_NAME>/${VAULT_NAME}/g" "$file" && rm "$file.bak"
+   done
+   ```
 
 3. **Initialize:**
 ```
@@ -79,7 +87,7 @@ This scaffolds `raw/` and `wiki/` folders in your vault.
 ai-brain-skill/
 ├── skill/
 │   ├── SKILL.md                    # Main skill file
-│   └── references/                 # 17 micro-reference files (< 500 chars each)
+│   └── references/                 # 19 micro-reference files (< 500 chars each)
 │       ├── schema-overview.md      # 3-layer structure definition
 │       ├── raw-layer-rules.md      # raw/ directory rules
 │       ├── wiki-layer-structure.md # wiki/ subdirectory listing
@@ -88,6 +96,8 @@ ai-brain-skill/
 │       ├── page-threshold.md       # When to create full vs stub pages
 │       ├── quality-standards.md    # Word counts, citation rules
 │       ├── ingest-workflow.md      # Ingest cycle steps
+│       ├── inbox-rules.md          # inbox/ safety and cleanup rules
+│       ├── inbox-workflow.md       # Batch inbox ingest workflow
 │       ├── compile-workflow.md     # Compile cycle steps
 │       ├── query-workflow.md       # Query cycle steps
 │       ├── lint-workflow.md        # Lint cycle steps
@@ -100,6 +110,7 @@ ai-brain-skill/
 ├── commands/
 │   ├── wiki-init.md                # /wiki-init scaffold command
 │   ├── wiki-ingest.md              # /wiki-ingest <source> command
+│   ├── wiki-ingest-inbox.md        # /wiki-ingest-inbox batch command
 │   ├── wiki-compile.md             # /wiki-compile command
 │   ├── wiki-query.md               # /wiki-query <question> command
 │   └── wiki-lint.md                # /wiki-lint command
