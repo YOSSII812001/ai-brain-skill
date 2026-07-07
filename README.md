@@ -4,6 +4,21 @@ Karpathy's "AI External Brain" system implemented as a Claude Code skill with Ob
 
 Build a personal knowledge base that **gets smarter the more you use it** -- powered by Claude Code + Obsidian.
 
+## What Is Better Now
+
+This release makes the skill easier to install, safer to run, and harder to accidentally drift out of sync.
+
+| Area | Before | Now | Why it matters |
+|------|--------|-----|----------------|
+| Setup | Users had to copy files and fill paths by hand | `scripts/setup-ai-brain.ps1` prints a dry-run plan, replaces placeholders, and copies the right files only when `-Apply` is passed | You can review every change before anything touches your local Claude, Codex, or vault files |
+| Obsidian paths | A user-specific Obsidian path could leak into the public skill | Environment values live in the vault `CLAUDE.md` and setup replaces placeholders | The public skill works on other machines without editing six separate places |
+| Command updates | Installed `/wiki-*` commands could silently become stale | `scripts/check-command-sync.ps1` compares installed commands with the repository version | You can detect old local commands before they confuse the workflow |
+| Reference files | Root references and packaged skill references could drift apart | `scripts/check-reference-parity.ps1` verifies both copies match | Fixes made for real use are not lost in the next distribution |
+| Scheduled runs | Task Scheduler setup was described but not bundled | Compile and lint runner scripts plus `install-scheduled-tasks.ps1` are included | Automated maintenance can be installed from the repo instead of recreated by hand |
+| Lock files | Stale `wiki/_meta/.lock` handling was only loosely described | Compile and lint docs now say when to skip, when to treat a lock as stale, and what file may be removed | Concurrent runs are safer and recovery is clearer |
+| Validation | Broken links, stale strings, script syntax, and file-count drift were manual checks | `scripts/validate-repo.ps1` and GitHub Actions run the same lightweight checks | Pull requests get a repeatable safety net |
+| Self-improvement | Lint findings stopped at vault cleanup | Repeated structural findings can now become skill improvement drafts | The skill can improve its own instructions instead of only patching one note |
+
 ## Architecture
 
 ```
