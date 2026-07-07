@@ -32,7 +32,7 @@ try {
   }
 
   $referenceCount = (Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'skill\references') -Filter '*.md' -File).Count
-  $readme = Get-Content -LiteralPath (Join-Path $RepoRoot 'README.md') -Raw
+  $readme = Get-Content -LiteralPath (Join-Path $RepoRoot 'README.md') -Raw -Encoding UTF8
   $countMatch = [regex]::Match($readme, '(\d+)\s+micro-reference files')
   if (-not $countMatch.Success) {
     Add-Failure 'README does not declare the micro-reference file count.'
@@ -51,7 +51,7 @@ try {
     ('karpa' + 'borern')
   )
   foreach ($file in Get-SourceFiles -Root $RepoRoot) {
-    $text = Get-Content -LiteralPath $file.FullName -Raw
+    $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
     foreach ($needle in $forbidden) {
       if ($text.Contains($needle)) {
         Add-Failure "Forbidden string '$needle' found in $($file.FullName)"
@@ -62,7 +62,7 @@ try {
   $placeholderForbiddenFiles = @('SKILL.md', 'skill\SKILL.md')
   foreach ($relative in $placeholderForbiddenFiles) {
     $path = Join-Path $RepoRoot $relative
-    $text = Get-Content -LiteralPath $path -Raw
+    $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
     if ($text -match '<YOUR_VAULT_NAME>') {
       Add-Failure "Legacy placeholder <YOUR_VAULT_NAME> must not appear in $relative"
     }
@@ -84,7 +84,7 @@ try {
 
   $markdownFiles = Get-SourceFiles -Root $RepoRoot | Where-Object { $_.Extension -eq '.md' }
   foreach ($file in $markdownFiles) {
-    $text = Get-Content -LiteralPath $file.FullName -Raw
+    $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
     $matches = [regex]::Matches($text, '\[[^\]]+\]\(([^)]+)\)')
     foreach ($match in $matches) {
       $link = $match.Groups[1].Value

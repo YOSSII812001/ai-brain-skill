@@ -89,14 +89,18 @@ $replacementFiles = @()
 $replacementFiles += Get-ChildItem -LiteralPath $CommandTarget -Filter 'wiki-*.md' -File
 $replacementFiles += Get-Item -LiteralPath $VaultSchemaTarget
 
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
 foreach ($file in $replacementFiles) {
-  $text = Get-Content -LiteralPath $file.FullName -Raw
+  $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
   $text = $text.Replace('<YOUR_VAULT_NAME>', $VaultName)
   $text = $text.Replace('<VAULT_NAME>', $VaultName)
   $text = $text.Replace('<VAULT_PATH>', $VaultPath)
   $text = $text.Replace('<OBSIDIAN_CLI_PATH>', $ObsidianCliPath)
   $text = $text.Replace('<AI_BRAIN_SKILL_PATH>', $SkillTarget)
-  Set-Content -LiteralPath $file.FullName -Value $text -Encoding UTF8
+
+  # Windows PowerShell 5.1 writes a BOM with Set-Content -Encoding UTF8.
+  [System.IO.File]::WriteAllText($file.FullName, $text, $utf8NoBom)
 }
 
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'scripts\validate-repo.ps1')
