@@ -757,6 +757,22 @@ function Reset-AiBrainFailure {
   $State.attentionAction = $null
 }
 
+function Clear-AiBrainAttentionIfCode {
+  param(
+    [Parameter(Mandatory = $true)][object]$State,
+    [Parameter(Mandatory = $true)][string]$ExpectedCode,
+    [Parameter(Mandatory = $true)][bool]$Enabled,
+    [Parameter(Mandatory = $true)][string]$RecoveryCode
+  )
+  if ([string]$State.status -ne 'attention' -or [string]$State.attentionCode -ne $ExpectedCode) {
+    return $false
+  }
+  $State.status = $(if ($Enabled) { 'ready' } else { 'off' })
+  Reset-AiBrainFailure -State $State
+  $State.lastRecoveryCode = $RecoveryCode
+  return $true
+}
+
 function Enter-AiBrainMutex {
   param([Parameter(Mandatory = $true)][string]$VaultId, [int]$TimeoutMilliseconds = 0)
   $name = "Global\AiBrainSleep-$VaultId"

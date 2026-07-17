@@ -496,6 +496,15 @@ try {
       Remove-MigratedLegacyAiBrainTasks -LegacyTasks $legacyTasks
       Set-AiBrainMigrationJournal -Path $journalPath -Journal $journal -Status 'old_removed'
     }
+    $installedState = Read-AiBrainState -Paths $paths -Config $config -Repair
+    if (Clear-AiBrainAttentionIfCode `
+        -State $installedState `
+        -ExpectedCode 'SCHEDULER_INSTALL_FAILED' `
+        -Enabled ([bool]$config.enabled) `
+        -RecoveryCode 'SCHEDULER_INSTALL_RECOVERED') {
+      Set-AiBrainState -Paths $paths -State $installedState
+      Write-AiBrainSleepReport -Config $config -State $installedState
+    }
     Set-AiBrainMigrationJournal -Path $journalPath -Journal $journal -Status 'verified'
     Set-AiBrainMigrationJournal -Path $journalPath -Journal $journal -Status 'committed'
     Write-Host 'PASS registered one S4U sleep task with compile and lint triggers'

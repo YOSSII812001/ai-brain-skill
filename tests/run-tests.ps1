@@ -1064,6 +1064,33 @@ status: complete
       Assert-Equal 'REPEATED_FAILURE_PAUSED' ([string]$state.attentionCode)
     }
 
+    Test-Case -Name 'successful scheduler repair clears only its own attention' -Action {
+      $state = New-AiBrainState -Enabled $true
+      $state.status = 'attention'
+      $state.attentionCode = 'SCHEDULER_INSTALL_FAILED'
+      $state.attentionAction = 'repair scheduler'
+      Assert-True (Clear-AiBrainAttentionIfCode `
+        -State $state `
+        -ExpectedCode 'SCHEDULER_INSTALL_FAILED' `
+        -Enabled $true `
+        -RecoveryCode 'SCHEDULER_INSTALL_RECOVERED')
+      Assert-Equal 'ready' ([string]$state.status)
+      Assert-Equal $null $state.attentionCode
+      Assert-Equal $null $state.attentionAction
+      Assert-Equal 'SCHEDULER_INSTALL_RECOVERED' ([string]$state.lastRecoveryCode)
+
+      $other = New-AiBrainState -Enabled $true
+      $other.status = 'attention'
+      $other.attentionCode = 'AGENT_AUTH_REQUIRED'
+      Assert-False (Clear-AiBrainAttentionIfCode `
+        -State $other `
+        -ExpectedCode 'SCHEDULER_INSTALL_FAILED' `
+        -Enabled $true `
+        -RecoveryCode 'SCHEDULER_INSTALL_RECOVERED')
+      Assert-Equal 'attention' ([string]$other.status)
+      Assert-Equal 'AGENT_AUTH_REQUIRED' ([string]$other.attentionCode)
+    }
+
     Test-Case -Name 'runtime maintenance enforces bounded retention' -Action {
       $runtime = New-TestDirectory -Name 'retention'
       $paths = Get-AiBrainRuntimePaths -RuntimeRoot $runtime
