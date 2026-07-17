@@ -576,6 +576,14 @@ try {
       Assert-Equal '17:00' $calendarStart.Substring(11, 5)
       $actionArguments = $document.SelectSingleNode('//t:Actions/t:Exec/t:Arguments', $ns).InnerText
       Assert-Match -Value $actionArguments -Pattern '(?:^|\s)-WindowStyle\s+Hidden(?:\s|$)'
+      $omittedRunLevelXml = $xml.Replace('<RunLevel>LeastPrivilege</RunLevel>', '')
+      Assert-True (Test-AiBrainTaskXmlContract -Xml $omittedRunLevelXml -CompileIntervalHours 4)
+      $highestRunLevelXml = $xml.Replace(
+        '<RunLevel>LeastPrivilege</RunLevel>',
+        '<RunLevel>HighestAvailable</RunLevel>')
+      Assert-Throws -Code 'TASK_NOT_LIMITED' -Action {
+        Test-AiBrainTaskXmlContract -Xml $highestRunLevelXml -CompileIntervalHours 4 | Out-Null
+      }
       $limitedXml = $xml.Replace(
         '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
         '<ExecutionTimeLimit>PT4H</ExecutionTimeLimit>')

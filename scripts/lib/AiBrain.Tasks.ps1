@@ -285,7 +285,8 @@ function Test-AiBrainTaskXmlContract {
     return $node.InnerText
   }
   if ((Get-NodeText '//t:Principal/t:LogonType') -ne 'S4U') { throw "TASK_NOT_S4U" }
-  if ((Get-NodeText '//t:Principal/t:RunLevel') -ne 'LeastPrivilege') { throw "TASK_NOT_LIMITED" }
+  $runLevel = Get-NodeText '//t:Principal/t:RunLevel'
+  if ($null -ne $runLevel -and $runLevel -ne 'LeastPrivilege') { throw "TASK_NOT_LIMITED" }
   if ((Get-NodeText '//t:MultipleInstancesPolicy') -ne 'IgnoreNew') { throw "TASK_NOT_IGNORE_NEW" }
   if ((Get-NodeText '//t:StartWhenAvailable') -ne 'true') { throw "TASK_NOT_START_WHEN_AVAILABLE" }
   if ((Get-NodeText '//t:WakeToRun') -ne 'false') { throw "TASK_WAKE_ENABLED" }
