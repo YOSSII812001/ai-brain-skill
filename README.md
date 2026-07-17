@@ -1,8 +1,8 @@
-# AI External Brain Skill for Claude Code
+# AI External Brain Skill for Claude Code and Codex
 
-Karpathy's "AI External Brain" system implemented as a Claude Code skill with Obsidian integration.
+Karpathy's "AI External Brain" system implemented as an Obsidian skill for Claude Code and Codex.
 
-Build a personal knowledge base that **gets smarter the more you use it** -- powered by Claude Code + Obsidian.
+Build a personal knowledge base that **gets smarter the more you use it** -- without having to remember maintenance commands.
 
 ## What Is Better Now
 
@@ -14,8 +14,9 @@ This release makes the skill easier to install, safer to run, and harder to acci
 | Obsidian paths | A user-specific Obsidian path could leak into the public skill | Environment values live in the vault `CLAUDE.md` and setup replaces placeholders | The public skill works on other machines without editing six separate places |
 | Command updates | Installed `/wiki-*` commands could silently become stale | `scripts/check-command-sync.ps1` compares installed commands with the repository version | You can detect old local commands before they confuse the workflow |
 | Reference files | Root references and packaged skill references could drift apart | `scripts/check-reference-parity.ps1` verifies both copies match | Fixes made for real use are not lost in the next distribution |
-| Scheduled runs | Task Scheduler setup was described but not bundled | Compile and lint runner scripts plus `install-scheduled-tasks.ps1` are included | Automated maintenance can be installed from the repo instead of recreated by hand |
-| Lock files | Stale `wiki/_meta/.lock` handling was only loosely described | Compile and lint docs now say when to skip, when to treat a lock as stale, and what file may be removed | Concurrent runs are safer and recovery is clearer |
+| Scheduled runs | Users had to remember compile and lint commands | Sleep Mode compiles every 4 hours and lints daily at 17:00 by default | The external brain maintains itself in the background |
+| Background execution | A PowerShell window could flash when a task started | One hidden S4U task, a hidden bootstrap, and a Job Object control the full child process tree | After the interactive setup, scheduled and "run now" paths do not open or close a terminal window |
+| Recovery | A failed run could leave partial changes or an unexplained stop | Staging, journals, rollback, a daily report, and `wiki-sleep doctor` provide recovery | The vault stays usable and tells the user one next action |
 | Validation | Broken links, stale strings, script syntax, and file-count drift were manual checks | `scripts/validate-repo.ps1` and GitHub Actions run the same lightweight checks | Pull requests get a repeatable safety net |
 | Self-improvement | Lint findings stopped at vault cleanup | Repeated structural findings can now become skill improvement drafts | The skill can improve its own instructions instead of only patching one note |
 
@@ -28,6 +29,7 @@ Obsidian Vault
 │   ├── articles/  papers/  repos/  datasets/  assets/
 ├── wiki/          <- AI-maintained knowledge layer
 │   ├── index.md  log.md
+│   ├── _meta/sleep-report.md
 │   ├── concepts/  entities/  sources/
 │   ├── syntheses/  outputs/  attachments/
 ├── CLAUDE.md      <- Schema definition (< 80 lines)
@@ -58,7 +60,7 @@ Plus `/wiki-init` for initial scaffolding.
 
 ### Prerequisites
 
-- [Claude Code](https://claude.ai/claude-code) installed
+- [Claude Code](https://claude.ai/claude-code) or [Codex](https://github.com/openai/codex) installed and signed in
 - [Obsidian](https://obsidian.md) installed with CLI support (v1.12.4+)
 
 ### Quick Install
@@ -70,10 +72,11 @@ Plus `/wiki-init` for initial scaffolding.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
   -VaultPath "C:\path\to\your\Obsidian Vault" `
   -VaultName "Obsidian Vault" `
-  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe"
+  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe" `
+  -SleepModeChoice Accept
 ```
 
-The setup script is dry-run by default. Add `-Apply` only after the printed plan looks right.
+The AI skill first explains compile as "organizing memories during sleep" and lint as a "daily health check," then asks whether the default 4-hour / 17:00 schedule is suitable. After the user answers, the AI passes an explicit `Accept`, `Custom`, or `Disable` choice to the non-interactive setup script. The script is dry-run by default; add `-Apply` only after the plan and any initial bulk estimate are approved.
 See [SETUP.md](SETUP.md) for the AI-assisted setup contract.
 
 3. **Initialize the vault:**
@@ -93,7 +96,7 @@ ai-brain-skill/
 │       └── validate.yml             # Lightweight repository validation
 ├── skill/
 │   ├── SKILL.md                    # Main skill file
-│   └── references/                 # 22 micro-reference files
+│   └── references/                 # 23 micro-reference files
 │       ├── schema-overview.md      # 3-layer structure definition
 │       ├── environment-config.md   # Environment source-of-truth rules
 │       ├── raw-layer-rules.md      # raw/ directory rules
@@ -109,6 +112,7 @@ ai-brain-skill/
 │       ├── query-workflow.md       # Query cycle steps
 │       ├── lint-workflow.md        # Lint cycle steps
 │       ├── loop-operation.md       # /loop self-paced operation
+│       ├── sleep-mode.md           # Background schedule, safety, and recovery
 │       ├── self-improvement-workflow.md # Skill improvement draft flow
 │       ├── init-workflow.md        # Init/scaffold steps
 │       ├── index-template.md       # wiki/index.md template
@@ -122,15 +126,20 @@ ai-brain-skill/
 │   ├── wiki-ingest-inbox.md        # /wiki-ingest-inbox batch command
 │   ├── wiki-compile.md             # /wiki-compile command
 │   ├── wiki-query.md               # /wiki-query <question> command
-│   └── wiki-lint.md                # /wiki-lint command
+│   ├── wiki-lint.md                # /wiki-lint command
+│   └── wiki-sleep.md               # Sleep Mode status and controls
 ├── scripts/
 │   ├── setup-ai-brain.ps1          # Dry-run-first installer
+│   ├── ai-brain-sleep-bootstrap.ps1 # Stable hidden task entry point
+│   ├── invoke-ai-brain-sleep.ps1   # Compile/lint orchestrator
+│   ├── manage-ai-brain-sleep.ps1   # Status, repair, and controls
+│   ├── lib/                         # Runtime, process, task, and transaction helpers
 │   ├── validate-repo.ps1           # Local and CI validation
 │   ├── check-command-sync.ps1      # Installed command drift check
 │   ├── check-reference-parity.ps1  # root vs distribution reference check
-│   ├── install-scheduled-tasks.ps1 # Task Scheduler registration helper
-│   ├── wiki-compile-scheduled.ps1  # Scheduled /wiki-compile runner
-│   └── wiki-lint-scheduled.ps1     # Scheduled /wiki-lint runner
+│   └── install-scheduled-tasks.ps1 # Task Scheduler registration helper
+├── tests/
+│   └── run-tests.ps1               # PowerShell 5.1 and pwsh regression tests
 └── vault/
     └── CLAUDE.md                   # Vault schema file template
 ```
@@ -161,91 +170,35 @@ ai-brain-skill/
 /wiki-lint stale
 ```
 
-## Automated Compile & Lint (Windows Task Scheduler)
+## Sleep Mode: maintenance without maintenance
 
-The knowledge base can be automatically maintained using Windows Task Scheduler + Claude Code CLI. This runs locally on your PC — no cloud infrastructure required.
+Sleep Mode is the normal operating mode on Windows. It treats compile like the brain organizing memories during sleep and lint like a daily health check.
 
-### How It Works
+| Operation | Default schedule | What it does |
+|-----------|------------------|--------------|
+| **Compile** | Every 4 hours | Connect new knowledge, promote useful stubs, and rebuild the index |
+| **Lint** | Daily at 17:00 local time | Check links, frontmatter, naming, stale pages, and orphans |
 
-```
-PC running → Task Scheduler fires
-  → PowerShell script (hidden window)
-    → claude -p "/wiki-compile" (CLI headless mode)
-      → SKILL.md diff-compile workflow executes
-        → Results logged to ~/.claude/logs/
-```
+One Task Scheduler task carries both triggers. It uses S4U, `-WindowStyle Hidden`, a hidden task setting, `CreateNoWindow`, and a Windows Job Object. Windows may show one administrator confirmation during the interactive initial setup. After registration, the release gate verifies that scheduled and "run now" paths do not show a terminal. The task does not wake a sleeping PC.
 
-### Default Schedule
+The runtime first detects whether source content changed. If nothing changed, compile finishes without calling the AI agent. Lint still runs once per day. Only `wiki/` is writable; `main/` and `raw/` remain read-only. Changes are staged and validated, then applied with a per-file journal and rollback verification.
 
-| Task | Schedule | What it does |
-|------|----------|-------------|
-| **Wiki Compile** | Every 3 hours | Detect new sources, promote stubs to articles, strengthen wikilinks, rebuild index |
-| **Wiki Lint** | Daily at 17:00 | Fix broken links, fill missing frontmatter, flag stale pages (>6 months), detect orphans |
+Users do not need to remember how the system works. Open `wiki/_meta/sleep-report.md` to see the latest result, the next compile and lint, any automatic recovery, and—only when needed—one action to take.
 
-Both tasks use **diff mode** by default — only processing changes since the last run. Full scans happen only on first run or when explicitly requested.
+Use the skill command for controls instead of editing Task Scheduler directly:
 
-### Setup
-
-1. **Dry-run task registration:**
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-scheduled-tasks.ps1 `
-  -VaultPath "C:\path\to\your\Obsidian Vault" `
-  -SkillPath "$HOME\.claude\skills\ai-brain"
+```text
+/wiki-sleep status
+/wiki-sleep run-now compile
+/wiki-sleep run-now lint
+/wiki-sleep disable
+/wiki-sleep enable
+/wiki-sleep doctor
 ```
 
-2. **Apply after the dry-run output looks right:**
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-scheduled-tasks.ps1 `
-  -VaultPath "C:\path\to\your\Obsidian Vault" `
-  -SkillPath "$HOME\.claude\skills\ai-brain" `
-  -Apply
-```
+Sleep Mode is registered by the applied setup unless the user declines it. Headless installation must pass an explicit choice such as `-SleepModeChoice Accept`, `Custom`, or `Disable`. Advanced details, migration behavior, large first-run approval, recovery, and uninstall are documented in [references/sleep-mode.md](references/sleep-mode.md).
 
-3. **Manage tasks:**
-```powershell
-# Check status
-Get-ScheduledTask -TaskPath '\Claude Code\'
-
-# Run now
-Start-ScheduledTask -TaskPath '\Claude Code\' -TaskName 'Claude Wiki Compile'
-
-# Pause / Resume
-Disable-ScheduledTask -TaskPath '\Claude Code\' -TaskName 'Claude Wiki Compile'
-Enable-ScheduledTask -TaskPath '\Claude Code\' -TaskName 'Claude Wiki Compile'
-```
-
-### Interval Decision Logic (Self-Paced)
-
-When using `/loop /wiki-compile` or `/loop /wiki-lint` interactively, the skill uses adaptive intervals:
-
-| Situation | Delay | Reason |
-|-----------|-------|--------|
-| Compile executed (files changed) | 120s | Check for cascading changes |
-| Sources updated but no promotion | 180s | Watch for threshold crossing |
-| No changes detected | 1200s | Idle check every 20 min |
-| Lint fixes applied | 120s | Verify fix side-effects |
-| Changes found, all clean | 270s | Stay in cache window |
-| All clean, periodic only | 1800s | Idle check every 30 min |
-
-> **Note on cache TTL:** Intervals avoid the 300s boundary. Under 270s stays in prompt cache (fast, cheap). Over 1200s accepts the cache miss but amortizes it with a longer wait.
-
-### Logs
-
-Logs are written to `~/.claude/logs/` with daily rotation:
-```
-~/.claude/logs/wiki-compile-2026-04-13.log
-~/.claude/logs/wiki-lint-2026-04-13.log
-```
-
-### PowerShell Encoding
-
-The bundled scheduler scripts use ASCII-safe text, so they run without a BOM requirement. If you localize the scripts with Japanese text, save them as UTF-8 with BOM:
-```powershell
-# Add BOM to an existing script
-$bytes = [System.IO.File]::ReadAllBytes($path)
-$bom = [byte[]](0xEF, 0xBB, 0xBF)
-[System.IO.File]::WriteAllBytes($path, $bom + $bytes)
-```
+Runtime metadata and safe JSONL logs live under `%LOCALAPPDATA%\ai-brain\<vault-id>\`. Raw agent output and vault content are not written to those logs.
 
 ## Validation
 
@@ -255,7 +208,7 @@ Run the local validator before opening a pull request:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-repo.ps1
 ```
 
-The validator checks reference parity, README file counts, command count, stale forbidden strings, PowerShell syntax, the workflow file, and internal Markdown links.
+The validator checks reference parity, README file counts, command count, stale forbidden strings, PowerShell syntax, the workflow file, internal Markdown links, and the mirrored skill hash. CI also runs `tests/run-tests.ps1` in Windows PowerShell 5.1 and PowerShell 7.
 
 To check installed command drift:
 

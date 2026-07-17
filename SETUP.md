@@ -1,99 +1,131 @@
-# AI-assisted setup
+# AIと進めるセットアップ
 
-This guide is written for an AI coding assistant. A human only needs to provide the repository path and the Obsidian vault path.
+この手順は、AIコーディングアシスタントが実行します。利用者が伝えるものは、リポジトリの場所とObsidian vaultの場所です。
 
-## Inputs
+## 初回に確認すること
 
-Required:
+AI skillはscriptを呼ぶ前に「睡眠モード」を説明し、利用者へ予定を確認します。setup scriptとScheduled Taskは質問せず、明示された選択だけを保存します。
 
-- Repository path: the cloned `ai-brain-skill` repository.
-- Vault path: the Obsidian vault root.
+- compile（コンパイル）は、人が眠っている間に記憶を整理する作業に相当します。増えたノートを結び直し、目次を整えます。既定は4時間ごとです。
+- lint（リント）は、毎日の健康診断に相当します。リンク切れや書式の乱れを点検します。既定は毎日17:00です。
+- どちらも通常はターミナルを表示せず、PCの裏側で動きます。
 
-Optional but recommended:
+利用者は「このまま使う」「時間を変える」「無効にする」から選べます。初回に選んだ後は、普段のコマンド操作は不要です。
 
-- Vault name: the name obsidian-cli uses for the vault.
-- Obsidian CLI path: the executable or CLI shim path. If omitted, the setup script uses `C:\Program Files\Obsidian\Obsidian.exe` when it exists.
-- Target: `claude` or `codex`.
+## 必要な情報
 
-## Dry run first
+- `VaultPath`: Obsidian vaultの絶対パス
+- `Target`: `claude`または`codex`
+- `VaultName`: Obsidian CLIで使うvault名。省略時はフォルダ名
+- `ObsidianCliPath`: Obsidian実行ファイル。省略時は標準の場所を探す
+- `AgentExecutable`: Claude CodeまたはCodexの直接実行できる`.exe`。省略時は既知の場所を探す
 
-Run from the repository root:
+## まずドライランする
+
+リポジトリのルートで実行します。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
   -VaultPath "C:\path\to\your\Obsidian Vault" `
   -VaultName "Obsidian Vault" `
-  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe"
+  -Target claude `
+  -SleepModeChoice Accept
 ```
 
-The default mode is dry-run. The script prints every planned copy, replacement, and validation step.
+`-Apply`を付けなければドライランです。コピー先、実行対象、compileの間隔、lintの時刻、初回整理の見積りを表示します。ファイルやタスクは変更しません。`SleepModeChoice`を省略した場合は、skillによる同意が必要だと機械可読なエラーで返します。
 
-## Apply setup
+S4Uタスクの登録に管理者権限が必要なPCでは、`-Apply`時にWindowsの管理者確認が1回だけ表示されます。これは人が始める初回設定です。登録後の定期実行と「今すぐ整理」は通常権限で動き、管理者確認やターミナルを表示しません。
 
-Add `-Apply` only after the dry-run output looks right:
+## 内容を確認して導入する
+
+表示内容が正しければ`-Apply`を付けます。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
   -VaultPath "C:\path\to\your\Obsidian Vault" `
   -VaultName "Obsidian Vault" `
-  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe" `
+  -Target claude `
+  -SleepModeChoice Accept `
   -Apply
 ```
 
-The script copies:
+すべての環境で、skillが利用者の回答を次のどれかへ変換します。
 
-- `skill/SKILL.md` to the installed skill directory.
-- `skill/references/` to the installed skill directory.
-- `commands/wiki-*.md` to the target command directory.
-- `vault/CLAUDE.md` to the vault root.
-- scheduled compile/lint scripts to the target scripts directory.
+```powershell
+# 既定の4時間ごと・毎日17:00
+-SleepModeChoice Accept
 
-`-Apply` overwrites those target files, including the vault root `CLAUDE.md`.
-Keep a backup first if the vault already has local instructions.
+# 任意の予定
+-SleepModeChoice Custom -CompileIntervalHours 6 -LintTime "19:30"
 
-It replaces placeholders in copied files:
+# 自動整理を使わない
+-SleepModeChoice Disable
+```
 
-- `<YOUR_VAULT_NAME>`
-- `<VAULT_NAME>`
-- `<VAULT_PATH>`
-- `<OBSIDIAN_CLI_PATH>`
-- `<AI_BRAIN_SKILL_PATH>`
+ドライランが初回整理の対象を表示した場合、skillは件数と容量を利用者へ示します。利用者が同意した後だけ、適用時に`-ApproveInitialBulk`を追加します。
 
-## Scheduled tasks
+`-Apply`は次を導入します。
 
-To add Windows Task Scheduler entries, pass `-InstallScheduledTasks -Apply`.
+- skill本体と23個のreference
+- 7個の`wiki-*`コマンド
+- vaultルートの`CLAUDE.md`
+- `%LOCALAPPDATA%\ai-brain\<vault-id>\`のローカルruntime
+- compileとlintを担当する1個のWindowsタスク
+
+既存ファイルは変更前にruntimeの`migration\install-backup-*`へ退避します。途中で失敗した場合は、記録したファイルを検証しながら元に戻します。
+
+## ターミナルを表示しない仕組み
+
+タスクはS4U、Hidden設定、`-WindowStyle Hidden`を使います。子プロセスも`CreateNoWindow`で起動し、Windows Job Objectで終了まで管理します。無表示保証の対象は、登録後の定期実行と「今すぐ整理」です。
+
+ただし、対象PCで「一瞬も表示されない」と言えるのは実機E2Eに合格した後です。セットアップは導入時にタスクを実行し、結果と生存確認を検証します。
+
+## 導入後の確認
+
+利用者は`wiki/_meta/sleep-report.md`を見るだけで、最終結果と次回予定を確認できます。
+
+```text
+/wiki-sleep status
+/wiki-sleep run-now compile
+/wiki-sleep run-now lint
+/wiki-sleep disable
+/wiki-sleep enable
+/wiki-sleep doctor
+```
+
+初回の整理量が安全上限を超える場合は、自動で止まり、見積もりと`/wiki-sleep approve-bulk`だけを案内します。状態ファイルが壊れた場合も自動で捨てず、明示承認後にバックアップしてから直します。
+
+## 再設定と高度な選択
+
+予定を変更する場合は、`-ReconfigureSleep`を付けて再実行します。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
   -VaultPath "C:\path\to\your\Obsidian Vault" `
-  -VaultName "Obsidian Vault" `
-  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe" `
-  -InstallScheduledTasks `
+  -Target codex `
+  -ReconfigureSleep `
+  -SleepModeChoice Custom `
+  -CompileIntervalHours 4 `
+  -LintTime "17:00" `
   -Apply
 ```
 
-Task registration is never done in dry-run mode.
+- `-SkipScheduledTask`: runtimeだけ導入し、Windowsタスクを登録しない高度な選択
+- `-InstallScheduledTasks`: 互換用。現在は`-Apply`時に既定でタスクを登録する
 
-## Validation
+vaultを移動した場合は、新しい`VaultPath`で再設定します。古いruntimeは自動削除しません。
 
-Run this before opening a pull request:
+## 開発者向け検証
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-repo.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1 -Suite All
+pwsh -NoProfile -File .\tests\run-tests.ps1 -Suite All
 ```
 
-The validator checks reference parity, README file counts, command count, forbidden stale strings, PowerShell syntax, the GitHub Actions workflow, and internal Markdown links.
-
-## Sync checks
-
-Check installed commands:
+導入済みコマンドの差分は、次で確認します。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-command-sync.ps1 -Target claude
-```
-
-Check root/distribution references:
-
-```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-reference-parity.ps1
 ```

@@ -1,40 +1,29 @@
 # Lintサイクル
 
-## 差分lint（/loop時のデフォルト）
+lintは、人の睡眠中の健康診断にあたります。記憶のつながりと管理情報を毎日点検します。
 
-1. wiki/log.mdから最終lintタイムスタンプを取得
-2. `find wiki/ -name "*.md" -newer` で変更ファイルを特定
-3. 変更ファイルのみ対象に以下を実行:
-   - 未解決wikilink → スタブ作成
-   - フロントマター欠損 → YAML補完
-   - デッドエンド → wikilink追加
-   - 命名違反 → リネーム提案
-4. 変更なし時も定期チェック（下記）は実行
+## 実行経路
 
-## 同時実行ロック
+定期実行と`/wiki-lint`は、compileと同じ睡眠モードのオーケストレーターを通します。
 
-開始時:
+1. vault単位のnamed mutexを取得する。時刻だけでlockを期限切れにしない。
+2. 未完了journalを先に復旧する。
+3. runtime上の作業用コピーでlintのJSON変更案を作る。
+4. `wiki/`外への変更を拒否する。
+5. 件数、容量、UTF-8、frontmatter、内部リンク、indexを検証する。
+6. journalとbackupを作り、外部編集がない場合だけ反映する。
+7. 最終検証に失敗した場合は変更を戻す。
 
-1. `wiki/_meta/` を作成する。
-2. `wiki/_meta/.lock` が30分以内なら実行をスキップする。
-3. 30分を超えた lock は stale とみなし、`wiki/_meta/.lock` だけを削除する。
-4. lock には `operation`, `started_at`, `agent`, `host`, `pid` を記録する。
+lintは変更の有無にかかわらず、毎日17:00の健康診断として1回動きます。compileも期限なら、compileの完了後にlintを実行します。
 
-終了時:
+## 点検内容
 
-- 成功/失敗に関わらず `wiki/_meta/.lock` だけを削除する。
-- `wiki/` 外のファイルは削除しない。
+- 未解決wikilinkを直す。必要ならstubを作る
+- 欠けたfrontmatterを補う
+- デッドエンドと孤立ページへ適切なつながりを作る
+- 命名違反を直す
+- 6か月を超えた記述を`stale`候補にする
+- 矛盾へ警告と両方のsourceを残す
+- 繰り返す構造問題は`self-improvement-workflow.md`の改善候補にする
 
-## 定期ヘルスチェック（変更なし時）
-
-5. 孤立ページ → リンク追加or統合（obsidian-cli orphans）
-6. 陳腐化(>6ヶ月) → status: stale
-7. 矛盾検出 → ⚠️フラグ
-8. 繰り返し構造問題 → `references/self-improvement-workflow.md` に従い改善候補をドラフト化
-
-## フルlint（`/wiki-lint all`）
-
-上記1-7を全ファイル対象に実行。
-
-結果をwiki/log.mdに記録。
-obsidian-cli orphans/unresolved活用。
+結果は`wiki/log.md`と`wiki/_meta/sleep-report.md`へ記録します。睡眠レポート自身は次回の変更として数えません。

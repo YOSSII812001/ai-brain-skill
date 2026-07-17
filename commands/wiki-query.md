@@ -17,4 +17,4 @@ $ARGUMENTS: 質問テキスト
 7. wiki/index.md と wiki/log.md を更新
 8. ユーザーに回答を提示
 
-対象vault: <YOUR_VAULT_NAME>
+対象vault: 現在のvault rootにある`CLAUDE.md`の`VAULT_NAME`

@@ -1,20 +1,25 @@
-# ナレッジベースのヘルスチェック: $ARGUMENTS
+# AI Brainの健康診断: $ARGUMENTS
 
-wiki層の品質問題を検出し修正する。
+このcommandはvaultを直接編集しない。睡眠モードの共通orchestratorへrequestを渡す。
 
-## 入力
+## scope
 
-$ARGUMENTS: all / links / frontmatter / stale / naming（省略時はall）
+- 省略 / `all`: 全項目
+- `links`: link
+- `frontmatter`: frontmatter
+- `stale`: 古い記述
+- `naming`: 命名
 
-## 手順
+上記以外は拒否する。
 
-1. `~/.claude/skills/ai-brain/SKILL.md` を Read
-2. vault root の `CLAUDE.md` を Read
-3. 以下をRead:
-   - `~/.claude/skills/ai-brain/references/lint-workflow.md`
-   - `~/.claude/skills/ai-brain/references/quality-standards.md`
-4. ワークフローに従い実行
-5. 結果をwiki/log.mdに記録
-6. 修正内容をユーザーに報告
+## 実行
 
-対象vault: <YOUR_VAULT_NAME>
+現在のvault rootにある`CLAUDE.md`を読み、`AI_BRAIN_RUNTIME_ROOT`と`AI_BRAIN_SCRIPT_PATH`を取得する。値がない場合や、現在のvaultと`VAULT_PATH`が一致しない場合は実行しない。
+
+PowerShellで次を実行する。`{script-path}`、`{runtime-root}`、`<scope>`だけを検証済みの値で置換する。
+
+```powershell
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script-path}\manage-ai-brain-sleep.ps1" -Action RunNow -RuntimeRoot "{runtime-root}" -Operation lint -Scope "<scope>"
+```
+
+taskがoff / paused / attentionの場合は直接agentを起動せず、表示された操作を1件だけ案内する。

@@ -12,4 +12,4 @@ AI外部脳の3層構造をObsidian vaultにスキャフォールドする。
 6. wiki/index.md と wiki/log.md を初期テンプレートで作成
 7. 初回lintで現状レポート出力
 
-対象vault: <YOUR_VAULT_NAME>
+対象vault: 現在のvault rootにある`CLAUDE.md`の`VAULT_NAME`

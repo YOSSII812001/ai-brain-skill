@@ -18,4 +18,4 @@ $ARGUMENTS: URL / ファイルパス / テキスト / path="既存vaultファイ
 4. ワークフローに従い実行
 5. wiki/index.md と wiki/log.md を更新
 
-対象vault: <YOUR_VAULT_NAME>
+対象vault: 現在のvault rootにある`CLAUDE.md`の`VAULT_NAME`

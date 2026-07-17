@@ -5,11 +5,11 @@ description: |
   パーソナルナレッジベースを管理するスキル。Ingest/Compile/Query/Lintの4サイクル運用。
   「ナレッジベース」「外部脳」「知識管理」「wiki」「Obsidian」「ノート整理」
   「情報整理」「記事取り込み」「論文管理」に関するリクエストが来たら必ずこのスキルを使うこと。
-  /wiki-ingest, /wiki-ingest-inbox, /wiki-compile, /wiki-query, /wiki-lint, /wiki-init コマンドもこのスキルが担当。
+  /wiki-ingest, /wiki-ingest-inbox, /wiki-compile, /wiki-query, /wiki-lint, /wiki-init, /wiki-sleep コマンドもこのスキルが担当。
   ソース素材の取込、wikiページの構築・更新、横断検索と引用付き回答生成、
   ヘルスチェックと自動修正など、ナレッジベース関連の操作は全てこのスキルの守備範囲。
   トリガー: ai-brain, knowledge-base, wiki-ingest, wiki-ingest-inbox, wiki-compile, wiki-query, wiki-lint,
-  wiki-init, ナレッジベース, 外部脳, 知識管理, Obsidian, ノート整理, 情報整理
+  wiki-init, wiki-sleep, 自動整理, 睡眠モード, ナレッジベース, 外部脳, 知識管理, Obsidian, ノート整理, 情報整理
 ---
 
 # AI External Brain — Karpathy式ナレッジベース管理
@@ -42,6 +42,56 @@ Obsidian vault上にKarpathy提唱のAI外部脳システムを構築・運用�
 1. vault rootの `CLAUDE.md` を Read して構造・ルールを把握
 2. `wiki/index.md` を Read してナレッジベースの現状を把握
 3. `wiki/log.md` の先頭10行を Read して直近の操作を確認
+4. `wiki/_meta/sleep-report.md` があればReadし、`wiki-sleep status`でtask、runner、設定、生存確認を点検
+
+`status`は安全に直せる既知driftだけを自動修復する。`paused`や`attention`を状態確認だけで解除しない。
+
+## 睡眠モード
+
+詳細は`references/sleep-mode.md`をReadすること。
+
+### 初回同意
+
+対象vaultに現行`consentVersion`がない場合、setup scriptを対話実行しない。AIが利用者へ次の意味を説明する。
+
+> 外部脳にも、人間の睡眠のような整理時間があります。
+> compileは、新しい情報を過去の知識と結びつける「記憶の整理」です。4時間ごとに確認します。
+> lintは、切れたリンクや古い知識を見つける「記憶の健康診断」です。毎日17:00に確認します。
+> この設定でよいですか？
+
+利用者へ1つだけ質問し、次のどれかを受け取る。
+
+- このまま設定する
+- 時間を変更する
+- 自動整理を使わない
+
+回答後にだけ、明示引数へ変換する。
+
+- 既定値: `-SleepModeChoice Accept -CompileIntervalHours 4 -LintTime "17:00"`
+- 時間変更: `-SleepModeChoice Custom`と利用者が指定した値
+- 無効化: `-SleepModeChoice Disable`
+
+setupのdry-runで初回整理の件数と容量を取得する。初回大量整理が必要なら見積りを示し、同じHuman Gateで承認された場合だけ`-ApproveInitialBulk`を付ける。setup、Scheduled Task、runner自身は`Read-Host`を使わない。
+
+### 自然言語の操作
+
+利用者の言葉を次へ正規化する。
+
+| 利用者の依頼 | action |
+|---|---|
+| 状態を教えて、昨夜の結果 | `status` |
+| 時間を変えて | `configure` |
+| 自動整理を再開して | `enable` |
+| 自動整理を止めて | `disable` |
+| 今すぐ整理して | `run-now compile` |
+| 今すぐ健康診断して | `run-now lint` |
+| 調子を直して | `doctor`または`doctor --repair` |
+| vaultを移動した | `rebind` |
+| 自動整理を削除して | `uninstall` |
+
+schedule変更、disable、uninstall、初回大量整理、未知設定や状態の再生成はHuman Gateである。実行内容と保持・削除されるものを説明し、人が明示的に承認した後だけ承認引数を渡す。通常run、安全な既知driftの修復、enableでは質問しない。
+
+`attention`では表示された操作を1件だけ案内する。未知actionや複数の復旧案を推測しない。
 
 ## アーキテクチャ（3層構造）
 
@@ -168,12 +218,11 @@ $VaultArg = "vault=<VAULT_NAME>"
 | `/wiki-compile` | wiki整合性維持・知識統合 |
 | `/wiki-query` | 横断検索＋引用付き回答 |
 | `/wiki-lint` | ヘルスチェック＋自動修正 |
+| `/wiki-sleep` | 自動整理の設定・状態・停止・再開・今すぐ実行・診断 |
 
-## ループ運用（/loop対応）
+## ループ運用（上級者向け互換）
 
-`/loop /wiki-compile` または `/loop /wiki-lint` でセルフペースの自動運用が可能。
-詳細は `references/loop-operation.md` を Read ツールで読み込むこと。
-本体には起動条件だけを残し、間隔決定や変更検出の詳細は reference に集約する。
+通常運用は睡眠モードを使う。`/loop /wiki-compile`と`/loop /wiki-lint`も、独自lockや直接編集をせず、1回のpending requestとして共通オーケストレーターへ渡す。詳細は`references/loop-operation.md`をReadすること。
 
 ## 関連スキル
 
@@ -188,3 +237,4 @@ $VaultArg = "vault=<VAULT_NAME>"
 | 2026-04-13 | description最適化・Cowork導入・環境情報設定 | トリガー精度向上・実環境適用 |
 | 2026-04-13 | ループ運用セクション追加 | /loop /wiki-compile, /loop /wiki-lint のセルフペース自動化対応 |
 | 2026-04-14 | inbox/バッチIngest機能追加 | inbox/フォルダ新設、/wiki-ingest-inboxコマンド追加 |
+| 2026-07-17 | 睡眠モード追加 | 4時間ごとの記憶整理、毎日17:00の健康診断、非表示実行、安全な復元、Human Gateを統合 |
