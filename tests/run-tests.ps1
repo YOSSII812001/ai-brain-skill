@@ -742,63 +742,6 @@ try {
         -RegisteredVaultPaths @($firstVault, $secondVault))
     }
 
-    Test-Case -Name 'hidden process receives BOM-free stdin and has no console window' -Action {
-      $work = New-TestDirectory -Name 'hidden-process'
-      $probe = Join-Path $script:FixtureRoot 'StdinProbe.ps1'
-      $text = 'stdin-' + [char]0x3042
-      $result = Invoke-AiBrainHiddenProcess `
-        -CommandPath $probe `
-        -StandardInput $text `
-        -WorkingDirectory $work `
-        -TimeoutSeconds 30 `
-        -MaxCaptureBytes 65536
-      Assert-Equal 0 ([int]$result.ExitCode)
-      Assert-False ([bool]$result.TimedOut)
-      Assert-True ([bool]$result.Drained)
-      $value = ([string]$result.StdOut.Text) | ConvertFrom-Json -ErrorAction Stop
-      Assert-Equal $text ([string]$value.text)
-      Assert-False ([bool]$value.stdinHadBom)
-      Assert-False ([bool]$value.hasConsoleWindow)
-    }
-
-    Test-Case -Name 'hidden process drains and bounds stdout and stderr' -Action {
-      $work = New-TestDirectory -Name 'bounded-process'
-      $probe = Join-Path $script:FixtureRoot 'StdinProbe.ps1'
-      $result = Invoke-AiBrainHiddenProcess `
-        -CommandPath $probe `
-        -Arguments @('-StdOutBytes', '8192', '-StdErrBytes', '6144') `
-        -WorkingDirectory $work `
-        -TimeoutSeconds 30 `
-        -MaxCaptureBytes 1024
-      Assert-Equal 0 ([int]$result.ExitCode)
-      Assert-True ([bool]$result.Drained)
-      Assert-True ([bool]$result.StdOut.Truncated)
-      Assert-True ([bool]$result.StdErr.Truncated)
-      Assert-Equal ([long]8192) ([long]$result.StdOut.Bytes)
-      Assert-Equal ([long]6144) ([long]$result.StdErr.Bytes)
-    }
-
-    Test-Case -Name 'hidden process timeout terminates its descendant tree' -Action {
-      $work = New-TestDirectory -Name 'timeout-tree'
-      $pidPath = Join-Path $work 'child.json'
-      $childId = $null
-      try {
-        $result = Invoke-AiBrainHiddenProcess `
-          -CommandPath $script:MockAgentExe `
-          -Arguments @('--spawn-child-probe', $pidPath) `
-          -WorkingDirectory $work `
-          -TimeoutSeconds 1 `
-          -MaxCaptureBytes 65536
-        Assert-True ([bool]$result.TimedOut)
-        Assert-True ([bool]$result.TreeTerminated)
-        Assert-True (Test-Path -LiteralPath $pidPath -PathType Leaf)
-        $childId = [int](Read-AiBrainJson -Path $pidPath).pid
-        Assert-True (Wait-TestProcessGone -ProcessId $childId -TimeoutSeconds 5) 'Timed out descendant survived.'
-      } finally {
-        if ($null -ne $childId) { Stop-TestMockProcess -ProcessId ([int]$childId) }
-      }
-    }
-
     Test-Case -Name 'change-set validates frontmatter links scope and secrets in staging' -Action {
       $fixture = New-TransactionFixture -Name 'change-validation'
       $runId = [Guid]::NewGuid().ToString('N')
@@ -1178,6 +1121,63 @@ status: complete
   }
 
   if ($Suite -in @('All', 'Integration')) {
+    Test-Case -Name 'hidden process receives BOM-free stdin and has no console window' -Action {
+      $work = New-TestDirectory -Name 'hidden-process'
+      $probe = Join-Path $script:FixtureRoot 'StdinProbe.ps1'
+      $text = 'stdin-' + [char]0x3042
+      $result = Invoke-AiBrainHiddenProcess `
+        -CommandPath $probe `
+        -StandardInput $text `
+        -WorkingDirectory $work `
+        -TimeoutSeconds 30 `
+        -MaxCaptureBytes 65536
+      Assert-Equal 0 ([int]$result.ExitCode)
+      Assert-False ([bool]$result.TimedOut)
+      Assert-True ([bool]$result.Drained)
+      $value = ([string]$result.StdOut.Text) | ConvertFrom-Json -ErrorAction Stop
+      Assert-Equal $text ([string]$value.text)
+      Assert-False ([bool]$value.stdinHadBom)
+      Assert-False ([bool]$value.hasConsoleWindow)
+    }
+
+    Test-Case -Name 'hidden process drains and bounds stdout and stderr' -Action {
+      $work = New-TestDirectory -Name 'bounded-process'
+      $probe = Join-Path $script:FixtureRoot 'StdinProbe.ps1'
+      $result = Invoke-AiBrainHiddenProcess `
+        -CommandPath $probe `
+        -Arguments @('-StdOutBytes', '8192', '-StdErrBytes', '6144') `
+        -WorkingDirectory $work `
+        -TimeoutSeconds 30 `
+        -MaxCaptureBytes 1024
+      Assert-Equal 0 ([int]$result.ExitCode)
+      Assert-True ([bool]$result.Drained)
+      Assert-True ([bool]$result.StdOut.Truncated)
+      Assert-True ([bool]$result.StdErr.Truncated)
+      Assert-Equal ([long]8192) ([long]$result.StdOut.Bytes)
+      Assert-Equal ([long]6144) ([long]$result.StdErr.Bytes)
+    }
+
+    Test-Case -Name 'hidden process timeout terminates its descendant tree' -Action {
+      $work = New-TestDirectory -Name 'timeout-tree'
+      $pidPath = Join-Path $work 'child.json'
+      $childId = $null
+      try {
+        $result = Invoke-AiBrainHiddenProcess `
+          -CommandPath $script:MockAgentExe `
+          -Arguments @('--spawn-child-probe', $pidPath) `
+          -WorkingDirectory $work `
+          -TimeoutSeconds 1 `
+          -MaxCaptureBytes 65536
+        Assert-True ([bool]$result.TimedOut)
+        Assert-True ([bool]$result.TreeTerminated)
+        Assert-True (Test-Path -LiteralPath $pidPath -PathType Leaf)
+        $childId = [int](Read-AiBrainJson -Path $pidPath).pid
+        Assert-True (Wait-TestProcessGone -ProcessId $childId -TimeoutSeconds 5) 'Timed out descendant survived.'
+      } finally {
+        if ($null -ne $childId) { Stop-TestMockProcess -ProcessId ([int]$childId) }
+      }
+    }
+
     Test-Case -Name 'moved vault reports attention without mutating state or leaking paths' -Action {
       $fixture = New-OrchestratorFixture -Target claude -RequestOperation compile
       $stateHash = Get-AiBrainFileSha256 -Path $fixture.Paths.State
