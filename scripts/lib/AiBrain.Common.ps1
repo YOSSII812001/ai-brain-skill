@@ -720,6 +720,7 @@ function Set-AiBrainAttention {
   $State.attentionCode = $Code
   $State.attentionAction = $Action
   $State.runId = $null
+  $State.activeRequestId = $null
   $State.child = $null
   Set-AiBrainState -Paths $Paths -State $State
   Write-AiBrainLogEvent -Paths $Paths -EventCode $Code -Level attention
@@ -740,6 +741,7 @@ function Register-AiBrainFailure {
   }
   $State.status = $(if ([int]$State.sameFailureCount -ge 3) { 'paused' } else { 'ready' })
   $State.runId = $null
+  $State.activeRequestId = $null
   $State.child = $null
   if ($State.status -eq 'paused') {
     $State.attentionCode = 'REPEATED_FAILURE_PAUSED'
@@ -769,6 +771,9 @@ function Clear-AiBrainAttentionIfCode {
   }
   $State.status = $(if ($Enabled) { 'ready' } else { 'off' })
   Reset-AiBrainFailure -State $State
+  $State.runId = $null
+  $State.activeRequestId = $null
+  $State.child = $null
   $State.lastRecoveryCode = $RecoveryCode
   return $true
 }

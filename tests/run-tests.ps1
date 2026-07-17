@@ -1053,9 +1053,11 @@ status: complete
       $paths = Get-AiBrainRuntimePaths -RuntimeRoot $runtime
       Initialize-AiBrainRuntimeDirectories -Paths $paths
       $state = New-AiBrainState -Enabled $true
+      $state.activeRequestId = [Guid]::NewGuid().ToString('N')
       Register-AiBrainFailure -Paths $paths -State $state -Code 'TEST_FAILURE'
       Assert-Equal 'ready' ([string]$state.status)
       Assert-Equal 1 ([int]$state.sameFailureCount)
+      Assert-Equal $null $state.activeRequestId
       Register-AiBrainFailure -Paths $paths -State $state -Code 'TEST_FAILURE'
       Assert-Equal 'ready' ([string]$state.status)
       Register-AiBrainFailure -Paths $paths -State $state -Code 'TEST_FAILURE'
@@ -1069,6 +1071,7 @@ status: complete
       $state.status = 'attention'
       $state.attentionCode = 'SCHEDULER_INSTALL_FAILED'
       $state.attentionAction = 'repair scheduler'
+      $state.activeRequestId = [Guid]::NewGuid().ToString('N')
       Assert-True (Clear-AiBrainAttentionIfCode `
         -State $state `
         -ExpectedCode 'SCHEDULER_INSTALL_FAILED' `
@@ -1077,6 +1080,7 @@ status: complete
       Assert-Equal 'ready' ([string]$state.status)
       Assert-Equal $null $state.attentionCode
       Assert-Equal $null $state.attentionAction
+      Assert-Equal $null $state.activeRequestId
       Assert-Equal 'SCHEDULER_INSTALL_RECOVERED' ([string]$state.lastRecoveryCode)
 
       $other = New-AiBrainState -Enabled $true
@@ -1089,6 +1093,22 @@ status: complete
         -RecoveryCode 'SCHEDULER_INSTALL_RECOVERED')
       Assert-Equal 'attention' ([string]$other.status)
       Assert-Equal 'AGENT_AUTH_REQUIRED' ([string]$other.attentionCode)
+    }
+
+    Test-Case -Name 'attention clears active execution identity' -Action {
+      $runtime = New-TestDirectory -Name 'attention-active-request'
+      $paths = Get-AiBrainRuntimePaths -RuntimeRoot $runtime
+      Initialize-AiBrainRuntimeDirectories -Paths $paths
+      $state = New-AiBrainState -Enabled $true
+      $state.status = 'running'
+      $state.runId = [Guid]::NewGuid().ToString('N')
+      $state.activeRequestId = [Guid]::NewGuid().ToString('N')
+      $state.child = [ordered]@{ status = 'running' }
+      Set-AiBrainAttention -Paths $paths -State $state -Code 'TEST_ATTENTION' -Action 'repair'
+      Assert-Equal 'attention' ([string]$state.status)
+      Assert-Equal $null $state.runId
+      Assert-Equal $null $state.activeRequestId
+      Assert-Equal $null $state.child
     }
 
     Test-Case -Name 'runtime maintenance enforces bounded retention' -Action {
