@@ -15,6 +15,23 @@ function New-AiBrainRunDirectory {
   return $directory
 }
 
+function Read-AiBrainSourceUtf8 {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  $offset = 0
+  if ($bytes.Length -ge 3 -and
+      $bytes[0] -eq 0xef -and
+      $bytes[1] -eq 0xbb -and
+      $bytes[2] -eq 0xbf) {
+    $offset = 3
+  }
+  try {
+    return $script:AiBrainUtf8NoBom.GetString($bytes, $offset, $bytes.Length - $offset)
+  } catch {
+    throw "SOURCE_ENCODING_INVALID"
+  }
+}
+
 function New-AiBrainSourceBundle {
   param(
     [Parameter(Mandatory = $true)][object]$Config,
@@ -34,7 +51,7 @@ function New-AiBrainSourceBundle {
       if ($relative -ieq 'wiki/_meta/sleep-report.md' -or $relative -match '(?i)^wiki/_meta/(?:\.lock|sleep-)') { continue }
       if (Test-AiBrainDeniedFileName -Name $file.Name) { throw "SOURCE_DENIED_FILE" }
       if ($file.Extension.ToLowerInvariant() -notin $script:AiBrainTextExtensions) { continue }
-      $content = Read-AiBrainUtf8 -Path $file.FullName
+      $content = Read-AiBrainSourceUtf8 -Path $file.FullName
       if ($null -ne (Test-AiBrainContainsSecret -Text $content)) { throw "SOURCE_SECRET_DETECTED" }
       $bytes = $script:AiBrainUtf8NoBom.GetByteCount($content)
       $totalBytes += $bytes

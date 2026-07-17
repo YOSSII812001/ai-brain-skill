@@ -289,7 +289,8 @@ function Test-AiBrainTaskXmlContract {
   if ($null -ne $runLevel -and $runLevel -ne 'LeastPrivilege') { throw "TASK_NOT_LIMITED" }
   if ((Get-NodeText '//t:MultipleInstancesPolicy') -ne 'IgnoreNew') { throw "TASK_NOT_IGNORE_NEW" }
   if ((Get-NodeText '//t:StartWhenAvailable') -ne 'true') { throw "TASK_NOT_START_WHEN_AVAILABLE" }
-  if ((Get-NodeText '//t:WakeToRun') -ne 'false') { throw "TASK_WAKE_ENABLED" }
+  $wakeToRun = Get-NodeText '//t:WakeToRun'
+  if ($null -ne $wakeToRun -and $wakeToRun -ne 'false') { throw "TASK_WAKE_ENABLED" }
   if ((Get-NodeText '//t:ExecutionTimeLimit') -ne 'PT0S') { throw "TASK_EXECUTION_LIMIT_ENABLED" }
   if ($null -ne $document.SelectSingleNode('//t:Repetition/t:Duration', $namespace)) { throw "TASK_REPETITION_EXPIRES" }
   if (-not $Preflight) {

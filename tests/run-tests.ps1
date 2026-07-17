@@ -584,6 +584,12 @@ try {
       Assert-Throws -Code 'TASK_NOT_LIMITED' -Action {
         Test-AiBrainTaskXmlContract -Xml $highestRunLevelXml -CompileIntervalHours 4 | Out-Null
       }
+      $omittedWakeToRunXml = $xml.Replace('<WakeToRun>false</WakeToRun>', '')
+      Assert-True (Test-AiBrainTaskXmlContract -Xml $omittedWakeToRunXml -CompileIntervalHours 4)
+      $wakeEnabledXml = $xml.Replace('<WakeToRun>false</WakeToRun>', '<WakeToRun>true</WakeToRun>')
+      Assert-Throws -Code 'TASK_WAKE_ENABLED' -Action {
+        Test-AiBrainTaskXmlContract -Xml $wakeEnabledXml -CompileIntervalHours 4 | Out-Null
+      }
       $limitedXml = $xml.Replace(
         '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
         '<ExecutionTimeLimit>PT4H</ExecutionTimeLimit>')
@@ -839,6 +845,20 @@ See [[concepts/topic]].
       }
     }
 
+    Test-Case -Name 'source bundle accepts UTF-8 BOM without weakening runtime JSON' -Action {
+      $fixture = New-TransactionFixture -Name 'source-bom'
+      $source = Join-Path $fixture.Vault 'main\bom.csv'
+      [IO.File]::WriteAllBytes($source, [byte[]](0xef, 0xbb, 0xbf, 0x61, 0x2c, 0x62, 0x0a))
+      $run = New-AiBrainRunDirectory -Paths $fixture.Paths -RunId ([Guid]::NewGuid().ToString('N'))
+      $bundle = New-AiBrainSourceBundle -Config $fixture.Config -RunDirectory $run
+      $entry = @($bundle.files | Where-Object { $_.path -eq 'main/bom.csv' })
+      Assert-Equal 1 $entry.Count
+      Assert-Equal "a,b`n" ([string]$entry[0].content)
+      Assert-Throws -Code 'UTF8_BOM_NOT_ALLOWED' -Action {
+        Read-AiBrainUtf8 -Path $source | Out-Null
+      }
+    }
+
     Test-Case -Name 'wiki transaction commits atomically and finalizes journal' -Action {
       $fixture = New-TransactionFixture -Name 'transaction-commit'
       $runId = [Guid]::NewGuid().ToString('N')
@@ -1047,15 +1067,62 @@ status: complete
       $paths = Get-AiBrainRuntimePaths -RuntimeRoot $runtime
       Initialize-AiBrainRuntimeDirectories -Paths $paths
       $state = New-AiBrainState -Enabled $true
+      $state.activeRequestId = [Guid]::NewGuid().ToString('N')
       Register-AiBrainFailure -Paths $paths -State $state -Code 'TEST_FAILURE'
       Assert-Equal 'ready' ([string]$state.status)
       Assert-Equal 1 ([int]$state.sameFailureCount)
+      Assert-Equal $null $state.activeRequestId
       Register-AiBrainFailure -Paths $paths -State $state -Code 'TEST_FAILURE'
       Assert-Equal 'ready' ([string]$state.status)
       Register-AiBrainFailure -Paths $paths -State $state -Code 'TEST_FAILURE'
       Assert-Equal 'paused' ([string]$state.status)
       Assert-Equal 3 ([int]$state.sameFailureCount)
       Assert-Equal 'REPEATED_FAILURE_PAUSED' ([string]$state.attentionCode)
+    }
+
+    Test-Case -Name 'successful scheduler repair clears only its own attention' -Action {
+      $state = New-AiBrainState -Enabled $true
+      $state.status = 'attention'
+      $state.attentionCode = 'SCHEDULER_INSTALL_FAILED'
+      $state.attentionAction = 'repair scheduler'
+      $state.activeRequestId = [Guid]::NewGuid().ToString('N')
+      Assert-True (Clear-AiBrainAttentionIfCode `
+        -State $state `
+        -ExpectedCode 'SCHEDULER_INSTALL_FAILED' `
+        -Enabled $true `
+        -RecoveryCode 'SCHEDULER_INSTALL_RECOVERED')
+      Assert-Equal 'ready' ([string]$state.status)
+      Assert-Equal $null $state.attentionCode
+      Assert-Equal $null $state.attentionAction
+      Assert-Equal $null $state.activeRequestId
+      Assert-Equal 'SCHEDULER_INSTALL_RECOVERED' ([string]$state.lastRecoveryCode)
+
+      $other = New-AiBrainState -Enabled $true
+      $other.status = 'attention'
+      $other.attentionCode = 'AGENT_AUTH_REQUIRED'
+      Assert-False (Clear-AiBrainAttentionIfCode `
+        -State $other `
+        -ExpectedCode 'SCHEDULER_INSTALL_FAILED' `
+        -Enabled $true `
+        -RecoveryCode 'SCHEDULER_INSTALL_RECOVERED')
+      Assert-Equal 'attention' ([string]$other.status)
+      Assert-Equal 'AGENT_AUTH_REQUIRED' ([string]$other.attentionCode)
+    }
+
+    Test-Case -Name 'attention clears active execution identity' -Action {
+      $runtime = New-TestDirectory -Name 'attention-active-request'
+      $paths = Get-AiBrainRuntimePaths -RuntimeRoot $runtime
+      Initialize-AiBrainRuntimeDirectories -Paths $paths
+      $state = New-AiBrainState -Enabled $true
+      $state.status = 'running'
+      $state.runId = [Guid]::NewGuid().ToString('N')
+      $state.activeRequestId = [Guid]::NewGuid().ToString('N')
+      $state.child = [ordered]@{ status = 'running' }
+      Set-AiBrainAttention -Paths $paths -State $state -Code 'TEST_ATTENTION' -Action 'repair'
+      Assert-Equal 'attention' ([string]$state.status)
+      Assert-Equal $null $state.runId
+      Assert-Equal $null $state.activeRequestId
+      Assert-Equal $null $state.child
     }
 
     Test-Case -Name 'runtime maintenance enforces bounded retention' -Action {
@@ -1244,6 +1311,34 @@ status: complete
       $appliedIndex = [array]::IndexOf([object[]]$eventCodes.ToArray(), 'COMPILE_APPLIED')
       Assert-True ($noChangeIndex -ge 0)
       Assert-True ($appliedIndex -gt $noChangeIndex)
+    }
+
+    Test-Case -Name 'source safety failure stops once and clears active request identity' -Action {
+      $fixture = New-OrchestratorFixture -Target codex -RequestOperation compile
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'main\protected.md') `
+        -Text 'password=abcdefghijklmnopqrstuv'
+      $fixture.Config.compileEnabled = $false
+      $fixture.Config.lintEnabled = $false
+      Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
+      $request = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
+      $result = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
+      Assert-Equal 1 ([int]$result.ExitCode)
+      $state = Read-AiBrainState -Paths $fixture.Paths
+      Assert-Equal 'attention' ([string]$state.status)
+      Assert-Equal 'SOURCE_SECRET_DETECTED' ([string]$state.attentionCode)
+      Assert-Equal 0 ([int]$state.sameFailureCount)
+      Assert-Equal $null $state.runId
+      Assert-Equal $null $state.activeRequestId
+      Assert-Equal $null $state.child
+      $location = Get-AiBrainRequestLocation `
+        -Paths $fixture.Paths `
+        -RequestId ([string]$request.requestId)
+      Assert-Equal 'failed' ([string]$location.Status)
+      Assert-Equal 'SOURCE_SECRET_DETECTED' ([string]$location.Request.resultCode)
+      $report = Read-AiBrainUtf8 -Path (Join-Path $fixture.Vault 'wiki\_meta\sleep-report.md')
+      Assert-True $report.Contains((Get-AiBrainMessage -Name action_source_safety))
+      Assert-Equal $null (Test-AiBrainContainsSecret -Text $report)
     }
 
     Test-Case -Name 'Claude adapter skips scheduled no-change and applies manual request' -Action {

@@ -62,7 +62,7 @@ function Complete-AiBrainRecoveredJournal {
 
 function Get-AiBrainOperationFailureKind {
   param([Parameter(Mandatory = $true)][string]$Code)
-  if ($Code -match '^(AGENT_AUTH_REQUIRED|CONFIG_|CONSENT_|RUNTIME_|VAULT_|STATE_|JSON_|NETWORK_|LOCAL_|REPARSE_|DISK_|PACKAGE_|STAGING_|INITIAL_BULK_|CHANGE_SET_(?:FILE|BYTE)_LIMIT_|ROLLBACK_EXTERNAL_EDIT_CONFLICT|EXTERNAL_EDIT_CONFLICT|AGENT_TREE_UNCONFIRMED|JOB_)') {
+  if ($Code -match '^(AGENT_AUTH_REQUIRED|CONFIG_|CONSENT_|RUNTIME_|VAULT_|STATE_|JSON_|NETWORK_|LOCAL_|REPARSE_|DISK_|PACKAGE_|STAGING_|SOURCE_(?:SECRET_DETECTED|DENIED_FILE|ENCODING_INVALID)|INITIAL_BULK_|CHANGE_SET_(?:FILE|BYTE)_LIMIT_|ROLLBACK_EXTERNAL_EDIT_CONFLICT|EXTERNAL_EDIT_CONFLICT|AGENT_TREE_UNCONFIRMED|JOB_)') {
     return 'attention'
   }
   return 'failure'
@@ -72,6 +72,9 @@ function Get-AiBrainAttentionAction {
   param([Parameter(Mandatory = $true)][string]$Code)
   if ($Code -eq 'AGENT_AUTH_REQUIRED') { return Get-AiBrainMessage -Name action_auth }
   if ($Code -match 'EXTERNAL_EDIT_CONFLICT') { return Get-AiBrainMessage -Name action_edit }
+  if ($Code -match '^SOURCE_(?:SECRET_DETECTED|DENIED_FILE|ENCODING_INVALID)$') {
+    return Get-AiBrainMessage -Name action_source_safety
+  }
   if ($Code -match '^(INITIAL_BULK_|CHANGE_SET_(?:FILE|BYTE)_LIMIT_)') { return Get-AiBrainMessage -Name action_bulk }
   if ($Code -eq 'VAULT_NOT_FOUND_OR_MOVED') { return Get-AiBrainMessage -Name action_vault }
   return Get-AiBrainMessage -Name action_doctor
