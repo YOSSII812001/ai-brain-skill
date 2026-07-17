@@ -40,9 +40,17 @@ try {
     Add-Failure "README reference count is $($countMatch.Groups[1].Value), actual is $referenceCount."
   }
 
-  $commandCount = (Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'commands') -Filter 'wiki-*.md' -File).Count
-  if ($commandCount -ne 6) {
-    Add-Failure "Expected 6 wiki command files, found $commandCount."
+  $expectedCommands = @(
+    'wiki-compile.md', 'wiki-ingest-inbox.md', 'wiki-ingest.md', 'wiki-init.md',
+    'wiki-lint.md', 'wiki-query.md', 'wiki-sleep.md'
+  )
+  $actualCommands = @(
+    Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'commands') -Filter 'wiki-*.md' -File |
+      Select-Object -ExpandProperty Name |
+      Sort-Object
+  )
+  if (($actualCommands -join '|') -ne (($expectedCommands | Sort-Object) -join '|')) {
+    Add-Failure "Wiki command manifest differs. Expected: $($expectedCommands -join ', ')."
   }
 
   $forbidden = @(
@@ -68,13 +76,74 @@ try {
     }
   }
 
-  $scriptFiles = Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'scripts') -Filter '*.ps1' -File
+  $scriptFiles = Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'scripts') -Recurse -Filter '*.ps1' -File
   foreach ($script in $scriptFiles) {
     $tokens = $null
     $errors = $null
     [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors.Count -gt 0) {
       Add-Failure "PowerShell parse error in $($script.Name): $($errors[0].Message)"
+    }
+  }
+
+  foreach ($relative in @(
+    'tests\run-tests.ps1',
+    'tests\fixtures\MockAgent.cs',
+    'tests\fixtures\StdinProbe.ps1',
+    'tests\fixtures\ManagerHarness.ps1'
+  )) {
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $relative) -PathType Leaf)) {
+      Add-Failure "Missing test file: $relative"
+    }
+  }
+
+  foreach ($file in Get-SourceFiles -Root $RepoRoot | Where-Object { $_.Extension -in @('.ps1', '.psm1', '.md', '.yml', '.yaml', '.json', '.cs') }) {
+    $bytes = [IO.File]::ReadAllBytes($file.FullName)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf) {
+      Add-Failure "UTF-8 BOM is not allowed: $($file.FullName)"
+    }
+    try {
+      [void](New-Object Text.UTF8Encoding($false, $true)).GetString($bytes)
+    } catch {
+      Add-Failure "File is not strict UTF-8: $($file.FullName)"
+    }
+  }
+
+  if ((Get-FileHash -LiteralPath (Join-Path $RepoRoot 'SKILL.md') -Algorithm SHA256).Hash -ne
+      (Get-FileHash -LiteralPath (Join-Path $RepoRoot 'skill\SKILL.md') -Algorithm SHA256).Hash) {
+    Add-Failure 'Root and packaged SKILL.md files differ.'
+  }
+  if ((Get-FileHash -LiteralPath (Join-Path $RepoRoot 'vault\CLAUDE.md') -Algorithm SHA256).Hash -ne
+      (Get-FileHash -LiteralPath (Join-Path $RepoRoot 'vault-CLAUDE-template.md') -Algorithm SHA256).Hash) {
+    Add-Failure 'Vault schema templates differ.'
+  }
+
+  foreach ($relative in @(
+    'scripts\ai-brain-sleep-bootstrap.ps1',
+    'scripts\invoke-ai-brain-sleep.ps1',
+    'scripts\manage-ai-brain-sleep.ps1',
+    'scripts\lib\AiBrain.Common.ps1',
+    'scripts\lib\AiBrain.Process.ps1',
+    'scripts\lib\AiBrain.Requests.ps1',
+    'scripts\lib\AiBrain.Schedule.ps1',
+    'scripts\lib\AiBrain.Tasks.ps1',
+    'scripts\lib\AiBrain.Transaction.ps1'
+  )) {
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $relative) -PathType Leaf)) {
+      Add-Failure "Missing sleep runtime package file: $relative"
+    }
+  }
+
+  $vaultSchema = Get-Content -LiteralPath (Join-Path $RepoRoot 'vault\CLAUDE.md') -Raw -Encoding UTF8
+  foreach ($placeholder in @('<AI_BRAIN_RUNTIME_ROOT>', '<AI_BRAIN_SCRIPT_PATH>')) {
+    if (-not $vaultSchema.Contains($placeholder)) {
+      Add-Failure "Vault schema is missing $placeholder"
+    }
+  }
+  foreach ($command in Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'commands') -Filter 'wiki-*.md' -File) {
+    $commandText = Get-Content -LiteralPath $command.FullName -Raw -Encoding UTF8
+    if ($commandText -match '<AI_BRAIN_RUNTIME_ROOT>|<YOUR_VAULT_NAME>') {
+      Add-Failure "Global command contains a vault-specific placeholder: $($command.Name)"
     }
   }
 

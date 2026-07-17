@@ -32,4 +32,4 @@ $ARGUMENTS: なし（inbox/全体を自動処理）
 - [ ] wiki/log.md に操作記録が追記されたか
 - [ ] **inbox/から成功ファイルが削除されたか（再スキャンで0件確認）**
 
-対象vault: <YOUR_VAULT_NAME>
+対象vault: 現在のvault rootにある`CLAUDE.md`の`VAULT_NAME`
