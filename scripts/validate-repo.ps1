@@ -181,4 +181,17 @@ if ($failures.Count -gt 0) {
   exit 1
 }
 
+if ([string]::Equals([string]$env:GITHUB_ACTIONS, 'true', [StringComparison]::OrdinalIgnoreCase)) {
+  $testScript = Join-Path $RepoRoot 'tests\run-tests.ps1'
+  $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  Write-Host 'Running CI unit tests with Windows PowerShell 5.1'
+  & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $testScript -Suite Unit
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  $powerShell = (Get-Command pwsh -ErrorAction Stop).Source
+  Write-Host 'Running CI unit tests with PowerShell'
+  & $powerShell -NoProfile -File $testScript -Suite Unit
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
 Write-Host 'PASS repository validation'
