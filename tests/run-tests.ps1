@@ -584,6 +584,12 @@ try {
       Assert-Throws -Code 'TASK_NOT_LIMITED' -Action {
         Test-AiBrainTaskXmlContract -Xml $highestRunLevelXml -CompileIntervalHours 4 | Out-Null
       }
+      $omittedWakeToRunXml = $xml.Replace('<WakeToRun>false</WakeToRun>', '')
+      Assert-True (Test-AiBrainTaskXmlContract -Xml $omittedWakeToRunXml -CompileIntervalHours 4)
+      $wakeEnabledXml = $xml.Replace('<WakeToRun>false</WakeToRun>', '<WakeToRun>true</WakeToRun>')
+      Assert-Throws -Code 'TASK_WAKE_ENABLED' -Action {
+        Test-AiBrainTaskXmlContract -Xml $wakeEnabledXml -CompileIntervalHours 4 | Out-Null
+      }
       $limitedXml = $xml.Replace(
         '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>',
         '<ExecutionTimeLimit>PT4H</ExecutionTimeLimit>')
