@@ -143,6 +143,7 @@ function New-AiBrainAgentPrompt {
       (Get-AiBrainMessage -Name safety_layers),
       (Get-AiBrainMessage -Name safety_json),
       'Every written Markdown file must include title, date_modified, type, and status in simple YAML frontmatter',
+      'Use flat YAML scalar fields or inline [item, item] arrays; do not use indented block sequences',
       'Set content to null for delete actions'
     )
     outputSchema = [ordered]@{
@@ -224,51 +225,78 @@ function Get-AiBrainWikiPathSet {
   return $set
 }
 
+function ConvertFrom-AiBrainFrontmatterScalar {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  $value = $Value.Trim()
+  if ([string]::IsNullOrWhiteSpace($value) -or $value -match '^[|>&*!@`{}]' -or
+      $value.IndexOf([char]0) -ge 0 -or $value -match '[\x01-\x08\x0B\x0C\x0E-\x1F]') {
+    throw "FRONTMATTER_YAML_INVALID"
+  }
+  if ($value.StartsWith("'")) {
+    if ($value -notmatch "^'(?:[^']|'')*'$") { throw "FRONTMATTER_YAML_INVALID" }
+    return $value.Substring(1, $value.Length - 2).Replace("''", "'")
+  }
+  if ($value.StartsWith('"')) {
+    if ($value -notmatch '^"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"$') {
+      throw "FRONTMATTER_YAML_INVALID"
+    }
+    try {
+      return [string]($value | ConvertFrom-Json -ErrorAction Stop)
+    } catch {
+      throw "FRONTMATTER_YAML_INVALID"
+    }
+  }
+  if ($value.StartsWith('[')) {
+    $quotedDouble = '"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"'
+    $quotedSingle = "'(?:[^']|'')*'"
+    $plainItem = '[A-Za-z0-9][A-Za-z0-9_.-]*'
+    $item = "(?:$plainItem|$quotedSingle|$quotedDouble)"
+    if ($value -notmatch "^\[\s*(?:$item(?:\s*,\s*$item)*)?\s*\]$") {
+      throw "FRONTMATTER_YAML_INVALID"
+    }
+    return $value
+  }
+  if ($value.IndexOf("'") -ge 0 -or $value.IndexOf('"') -ge 0 -or
+      $value.IndexOf('[') -ge 0 -or $value.IndexOf(']') -ge 0 -or
+      $value.IndexOf('{') -ge 0 -or $value.IndexOf('}') -ge 0 -or
+      $value -match ':\s' -or $value -match '\s#') {
+    throw "FRONTMATTER_YAML_INVALID"
+  }
+  return $value
+}
+
 function Test-AiBrainFrontmatter {
   param([Parameter(Mandatory = $true)][string]$Content)
   $match = [regex]::Match($Content, '(?s)\A---\r?\n(?<yaml>.+?)\r?\n---\r?\n')
   if (-not $match.Success) { throw "MARKDOWN_FRONTMATTER_REQUIRED" }
   $values = @{}
-  foreach ($line in ($match.Groups['yaml'].Value -split '\r?\n')) {
+  $lines = @($match.Groups['yaml'].Value -split '\r?\n')
+  for ($index = 0; $index -lt $lines.Count; $index++) {
+    $line = [string]$lines[$index]
     if ([string]::IsNullOrWhiteSpace($line) -or $line.TrimStart().StartsWith('#')) { continue }
-    if ($line -notmatch '^(?<key>[A-Za-z][A-Za-z0-9_-]*):[ \t]*(?<value>.*)$') { throw "FRONTMATTER_YAML_INVALID" }
-    $key = $Matches.key.ToLowerInvariant()
-    $value = $Matches.value.Trim()
-    if ($values.ContainsKey($key)) { throw "FRONTMATTER_DUPLICATE_KEY" }
-    if ([string]::IsNullOrWhiteSpace($value) -or $value -match '^[|>&*!@`{}]' -or
-        $value.IndexOf([char]0) -ge 0 -or $value -match '[\x01-\x08\x0B\x0C\x0E-\x1F]') {
+    if ($line -notmatch '^(?<key>[A-Za-z][A-Za-z0-9_-]*):[ \t]*(?<value>.*)$') {
       throw "FRONTMATTER_YAML_INVALID"
     }
-    if ($value.StartsWith("'")) {
-      if ($value -notmatch "^'(?:[^']|'')*'$") { throw "FRONTMATTER_YAML_INVALID" }
-      $values[$key] = $value.Substring(1, $value.Length - 2).Replace("''", "'")
-    } elseif ($value.StartsWith('"')) {
-      if ($value -notmatch '^"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"$') {
+    $key = $Matches.key.ToLowerInvariant()
+    $rawValue = [string]$Matches.value
+    if ($values.ContainsKey($key)) { throw "FRONTMATTER_DUPLICATE_KEY" }
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+      if ($key -in @('title', 'date_modified', 'type', 'status')) {
         throw "FRONTMATTER_YAML_INVALID"
       }
-      try {
-        $values[$key] = [string]($value | ConvertFrom-Json -ErrorAction Stop)
-      } catch {
-        throw "FRONTMATTER_YAML_INVALID"
+      $items = New-Object System.Collections.ArrayList
+      while ($index + 1 -lt $lines.Count -and
+          [string]$lines[$index + 1] -match '^[ \t]+-[ \t]+(?<item>.+)$') {
+        $itemText = [string]$Matches.item
+        if ($itemText.TrimStart().StartsWith('[')) { throw "FRONTMATTER_YAML_INVALID" }
+        [void]$items.Add((ConvertFrom-AiBrainFrontmatterScalar -Value $itemText))
+        $index++
       }
-    } elseif ($value.StartsWith('[')) {
-      $quotedDouble = '"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"'
-      $quotedSingle = "'(?:[^']|'')*'"
-      $plainItem = '[A-Za-z0-9][A-Za-z0-9_.-]*'
-      $item = "(?:$plainItem|$quotedSingle|$quotedDouble)"
-      if ($value -notmatch "^\[\s*(?:$item(?:\s*,\s*$item)*)?\s*\]$") {
-        throw "FRONTMATTER_YAML_INVALID"
-      }
-      $values[$key] = $value
-    } else {
-      if ($value.IndexOf("'") -ge 0 -or $value.IndexOf('"') -ge 0 -or
-          $value.IndexOf('[') -ge 0 -or $value.IndexOf(']') -ge 0 -or
-          $value.IndexOf('{') -ge 0 -or $value.IndexOf('}') -ge 0 -or
-          $value -match ':\s' -or $value -match '\s#') {
-        throw "FRONTMATTER_YAML_INVALID"
-      }
-      $values[$key] = $value
+      if ($items.Count -eq 0) { throw "FRONTMATTER_YAML_INVALID" }
+      $values[$key] = @($items)
+      continue
     }
+    $values[$key] = ConvertFrom-AiBrainFrontmatterScalar -Value $rawValue
   }
   foreach ($required in @('title', 'date_modified', 'type', 'status')) {
     if (-not $values.ContainsKey($required)) { throw "FRONTMATTER_REQUIRED_FIELD_MISSING" }
