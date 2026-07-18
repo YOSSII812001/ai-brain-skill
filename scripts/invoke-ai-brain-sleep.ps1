@@ -309,6 +309,8 @@ function Read-AiBrainBatchChangeSet {
     [switch]$Worker,
     [string[]]$AllowedPaths = @(),
     [string[]]$RetainPaths = @(),
+    [string[]]$ExistingPaths = @(),
+    [switch]$AllowNewPaths,
     [ValidateRange(-1, 1000)][int]$MaxChanges = -1
   )
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or
@@ -326,6 +328,8 @@ function Read-AiBrainBatchChangeSet {
     -Worker:$Worker `
     -AllowedPaths $AllowedPaths `
     -RetainPaths $RetainPaths `
+    -ExistingPaths $ExistingPaths `
+    -AllowNewPaths:$AllowNewPaths `
     -MaxChanges $MaxChanges
 }
 
@@ -399,6 +403,14 @@ function Invoke-AiBrainOperation {
     detectorVersion = [string]$bundle.detectorVersion
   }
   $protectedWikiPaths = Get-AiBrainProtectedWikiPathSet -SourceInventory $bundle
+  $existingWikiPaths = @(
+    @($bundle.files | Where-Object {
+      ([string]$_.path).Replace('\', '/') -like 'wiki/*'
+    } | ForEach-Object {
+      [string]$_.path
+    }) +
+    @($bundle.protectedWikiPaths)
+  )
   if (Test-AiBrainProtectedPageScope `
       -Operation $Operation `
       -Scope $Scope `
@@ -496,11 +508,8 @@ function Invoke-AiBrainOperation {
   $workerChangeSets = New-Object System.Collections.ArrayList
   for ($index = 0; $index -lt $activeChunks.Count; $index++) {
     $chunk = $activeChunks[$index]
-    $workerRetainPaths = $(if ($Operation -eq 'lint') {
-      @($chunk.Files | ForEach-Object { [string]$_.path })
-    } else {
-      @()
-    })
+    $workerRetainPaths = @($chunk.Files | ForEach-Object { [string]$_.path })
+    $workerAllowsNewPaths = $Operation -eq 'compile'
     $workerChangeLimit = Get-AiBrainWorkerChangeLimit `
       -TotalWorkers $activeChunks.Count `
       -Ordinal $index `
@@ -517,6 +526,8 @@ function Invoke-AiBrainOperation {
         -ProtectedWikiPaths $protectedWikiPaths `
         -Worker `
         -RetainPaths $workerRetainPaths `
+        -ExistingPaths $existingWikiPaths `
+        -AllowNewPaths:$workerAllowsNewPaths `
         -MaxChanges $workerChangeLimit
     } elseif ([string]$journalEntry.status -eq 'running' -and
         (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
@@ -530,6 +541,8 @@ function Invoke-AiBrainOperation {
           -ProtectedWikiPaths $protectedWikiPaths `
           -Worker `
           -RetainPaths $workerRetainPaths `
+          -ExistingPaths $existingWikiPaths `
+          -AllowNewPaths:$workerAllowsNewPaths `
           -MaxChanges $workerChangeLimit
         Set-AiBrainBatchChunkCompleted `
           -Journal $journal `
@@ -573,6 +586,8 @@ function Invoke-AiBrainOperation {
         -ProtectedWikiPaths $protectedWikiPaths `
         -Worker `
         -RetainPaths $workerRetainPaths `
+        -ExistingPaths $existingWikiPaths `
+        -AllowNewPaths:$workerAllowsNewPaths `
         -MaxChanges $workerChangeLimit
       Write-AiBrainTextAtomic -Path $outputPath -Text ($finalText.Trim() + "`n")
       $resultHash = Get-AiBrainFileSha256 -Path $outputPath

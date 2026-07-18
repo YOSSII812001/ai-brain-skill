@@ -1031,6 +1031,12 @@ source_paths:
         $promptContract = $prompt | ConvertFrom-Json
         $safetyContract = @($promptContract.safety) -join "`n"
         Assert-Match `
+          -Value ([string]$promptContract.coordination.rule) `
+          -Pattern 'Modify an existing wiki page only when that exact path is present in this input chunk'
+        Assert-Match `
+          -Value ([string]$promptContract.coordination.rule) `
+          -Pattern 'Create a new page only when it is directly justified by this chunk'
+        Assert-Match `
           -Value $safetyContract `
           -Pattern 'type exactly one of concept, entity, source, synthesis, output, index, log'
         Assert-Match `
@@ -1222,6 +1228,19 @@ source_paths:
       Assert-Equal 'wiki/priority-1.md' ([string]$owned.changes[0].path)
       Assert-Equal 'wiki/priority-3.md' ([string]$owned.changes[1].path)
 
+      $compileOwned = Test-AiBrainChunkChangeSet `
+        -ChangeSet $ranked `
+        -Operation compile `
+        -Scope all `
+        -ProtectedWikiPaths @{} `
+        -RetainPaths @('wiki/priority-1.md') `
+        -ExistingPaths @('wiki/priority-1.md', 'wiki/priority-2.md') `
+        -AllowNewPaths `
+        -MaxChanges 2
+      Assert-Equal 2 (@($compileOwned.changes).Count)
+      Assert-Equal 'wiki/priority-1.md' ([string]$compileOwned.changes[0].path)
+      Assert-Equal 'wiki/priority-3.md' ([string]$compileOwned.changes[1].path)
+
       $unsafeDiscarded = New-ChangeSet -Changes @(
         (New-WriteChange -Path 'wiki/priority-1.md' -Content $script:TopicContent),
         (New-WriteChange -Path 'wiki/priority-2.md' -Content $script:TopicContent),
@@ -1245,6 +1264,21 @@ source_paths:
           -Scope all `
           -ProtectedWikiPaths @{} `
           -RetainPaths @('wiki/priority-1.md') | Out-Null
+      }
+
+      Assert-Throws -Code 'CHANGE_SET_SECRET_DETECTED' -Action {
+        Test-AiBrainChunkChangeSet `
+          -ChangeSet $unsafeDiscarded `
+          -Operation compile `
+          -Scope all `
+          -ProtectedWikiPaths @{} `
+          -RetainPaths @('wiki/priority-1.md') `
+          -ExistingPaths @(
+            'wiki/priority-1.md',
+            'wiki/priority-2.md',
+            'wiki/priority-3.md'
+          ) `
+          -AllowNewPaths | Out-Null
       }
     }
 
@@ -2082,6 +2116,39 @@ status: complete
       foreach ($probePath in $probes) {
         $probe = Read-AiBrainJson -Path $probePath.FullName
         Assert-Equal 'lint' ([string]$probe.operation)
+        Assert-Equal 'worker' ([string]$probe.mode)
+      }
+    }
+
+    Test-Case -Name 'compile workers retain existing pages only from their input chunk' -Action {
+      $fixture = New-OrchestratorFixture -Target claude -RequestOperation compile
+      $fixture.Config.compileEnabled = $false
+      $fixture.Config.lintEnabled = $false
+      $fixture.Config.limits.maxSourceFiles = 1
+      Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'main\existing-conflict-a.md') `
+        -Text 'MOCK_EXISTING_CONFLICT'
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'main\existing-conflict-b.md') `
+        -Text 'MOCK_EXISTING_CONFLICT'
+      $topicPath = Join-Path $fixture.Vault 'wiki\concepts\topic.md'
+      $topicHash = Get-AiBrainFileSha256 -Path $topicPath
+      $request = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
+      $result = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
+      Assert-Equal 0 ([int]$result.ExitCode)
+      $location = Get-AiBrainRequestLocation `
+        -Paths $fixture.Paths `
+        -RequestId ([string]$request.requestId)
+      Assert-Equal 'completed' ([string]$location.Status)
+      Assert-Equal 'clean' ([string]$location.Request.resultCode)
+      Assert-Equal $topicHash (Get-AiBrainFileSha256 -Path $topicPath)
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
+      $probes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File)
+      Assert-Equal 4 $probes.Count
+      foreach ($probePath in $probes) {
+        $probe = Read-AiBrainJson -Path $probePath.FullName
+        Assert-Equal 'compile' ([string]$probe.operation)
         Assert-Equal 'worker' ([string]$probe.mode)
       }
     }

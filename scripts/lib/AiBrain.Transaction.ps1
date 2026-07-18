@@ -129,7 +129,7 @@ function New-AiBrainAgentPrompt {
     $coordination.rule = $(if ($Operation -eq 'lint') {
       'Do not write or delete reserved paths. Modify only existing wiki paths present in this input chunk, and do not create new pages.'
     } else {
-      'Do not write or delete reserved paths. Only return changes directly justified by this input chunk.'
+      'Do not write or delete reserved paths. Modify an existing wiki page only when that exact path is present in this input chunk. Create a new page only when it is directly justified by this chunk.'
     })
   } else {
     $coordination.allowedPaths = @($AllowedPaths)

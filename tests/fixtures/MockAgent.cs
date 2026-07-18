@@ -167,6 +167,10 @@ internal static class MockAgent
         {
             return NewWriteChangeSet(operation, "wiki/conflict.md", "Conflict", "synthesis");
         }
+        if (prompt.IndexOf("MOCK_EXISTING_CONFLICT", StringComparison.Ordinal) >= 0)
+        {
+            return NewWriteChangeSet(operation, "wiki/concepts/topic.md", "Existing Conflict", "concept");
+        }
         if (prompt.IndexOf("MOCK_WRITE", StringComparison.Ordinal) < 0)
         {
             return "{\"schemaVersion\":\"ai-brain-change-set-v1\",\"operation\":" +

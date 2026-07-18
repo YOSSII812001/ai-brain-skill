@@ -561,6 +561,8 @@ function Test-AiBrainChunkChangeSet {
     [switch]$Worker,
     [string[]]$AllowedPaths = @(),
     [string[]]$RetainPaths = @(),
+    [string[]]$ExistingPaths = @(),
+    [switch]$AllowNewPaths,
     [ValidateRange(-1, 1000)][int]$MaxChanges = -1
   )
   $allowed = @{}
@@ -570,6 +572,10 @@ function Test-AiBrainChunkChangeSet {
   $retained = @{}
   foreach ($retainedPath in $RetainPaths) {
     $retained[$retainedPath.Replace('\', '/').ToLowerInvariant()] = $true
+  }
+  $existing = @{}
+  foreach ($existingPath in $ExistingPaths) {
+    $existing[$existingPath.Replace('\', '/').ToLowerInvariant()] = $true
   }
   $seen = @{}
   $safeChanges = New-Object System.Collections.ArrayList
@@ -619,7 +625,8 @@ function Test-AiBrainChunkChangeSet {
   $selectedChanges = @($safeChanges)
   if ($retained.Count -gt 0) {
     $selectedChanges = @($selectedChanges | Where-Object {
-      $retained.ContainsKey(([string]$_.path).Replace('\', '/').ToLowerInvariant())
+      $key = ([string]$_.path).Replace('\', '/').ToLowerInvariant()
+      $retained.ContainsKey($key) -or ($AllowNewPaths -and -not $existing.ContainsKey($key))
     })
   }
   if ($MaxChanges -ge 0) {
