@@ -842,6 +842,43 @@ See [[concepts/topic]].
       }
     }
 
+    Test-Case -Name 'frontmatter accepts safe block sequences and rejects complex YAML' -Action {
+      $safeBlockSequence = @'
+---
+title: Block List
+date_modified: 2026-07-18
+type: synthesis
+status: complete
+source_paths:
+  - "main/first.md"
+  - "raw/path with spaces.md"
+---
+# Block List
+'@ + "`n"
+      Assert-True (Test-AiBrainFrontmatter -Content $safeBlockSequence)
+
+      $nestedMapping = $safeBlockSequence.Replace(
+        '  - "main/first.md"',
+        '  - path: "main/first.md"')
+      Assert-Throws -Code 'FRONTMATTER_YAML_INVALID' -Action {
+        Test-AiBrainFrontmatter -Content $nestedMapping | Out-Null
+      }
+
+      $yamlTag = $safeBlockSequence.Replace(
+        '  - "main/first.md"',
+        '  - !include main/first.md')
+      Assert-Throws -Code 'FRONTMATTER_YAML_INVALID' -Action {
+        Test-AiBrainFrontmatter -Content $yamlTag | Out-Null
+      }
+
+      $requiredBlockSequence = $safeBlockSequence.Replace(
+        'title: Block List',
+        "title:`n  - `"Block List`"")
+      Assert-Throws -Code 'FRONTMATTER_YAML_INVALID' -Action {
+        Test-AiBrainFrontmatter -Content $requiredBlockSequence | Out-Null
+      }
+    }
+
     Test-Case -Name 'source bundle excludes denied names and secret content without staging them' -Action {
       $fixture = New-TransactionFixture -Name 'source-exclude'
       Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\.env') -Text 'SAFE_NAME_ONLY'
