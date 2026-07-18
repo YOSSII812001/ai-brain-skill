@@ -857,6 +857,13 @@ source_paths:
 '@ + "`n"
       Assert-True (Test-AiBrainFrontmatter -Content $safeBlockSequence)
 
+      $unicodeAlias = [string][char]0x5225 + [char]0x540D
+      $safeInlineArray = $safeBlockSequence.Replace(
+        'status: complete',
+        'status: complete' + "`n" +
+          ('aliases: [{0}, Another Name, "quoted, comma"]' -f $unicodeAlias))
+      Assert-True (Test-AiBrainFrontmatter -Content $safeInlineArray)
+
       $nestedMapping = $safeBlockSequence.Replace(
         '  - "main/first.md"',
         '  - path: "main/first.md"')
@@ -876,6 +883,24 @@ source_paths:
         "title:`n  - `"Block List`"")
       Assert-Throws -Code 'FRONTMATTER_YAML_INVALID' -Action {
         Test-AiBrainFrontmatter -Content $requiredBlockSequence | Out-Null
+      }
+
+      foreach ($unsafeArray in @(
+        'aliases: [[nested]]',
+        'aliases: [!include file]',
+        'aliases: [&anchor value]',
+        'aliases: [# comment]',
+        'aliases: [%directive]',
+        'aliases: [? mapping]',
+        'aliases: [- sequence]',
+        'aliases: [: mapping]'
+      )) {
+        $unsafeInlineArray = $safeBlockSequence.Replace(
+          'status: complete',
+          'status: complete' + "`n" + $unsafeArray)
+        Assert-Throws -Code 'FRONTMATTER_YAML_INVALID' -Action {
+          Test-AiBrainFrontmatter -Content $unsafeInlineArray | Out-Null
+        }
       }
     }
 

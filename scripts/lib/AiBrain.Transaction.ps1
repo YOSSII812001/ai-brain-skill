@@ -143,7 +143,7 @@ function New-AiBrainAgentPrompt {
       (Get-AiBrainMessage -Name safety_layers),
       (Get-AiBrainMessage -Name safety_json),
       'Every written Markdown file must include title, date_modified, type, and status in simple YAML frontmatter',
-      'Use flat YAML scalar fields or inline [item, item] arrays; do not use indented block sequences',
+      'Use flat YAML scalar fields or inline [item, item] arrays; quote array items containing spaces or non-ASCII text',
       'Set content to null for delete actions'
     )
     outputSchema = [ordered]@{
@@ -225,10 +225,70 @@ function Get-AiBrainWikiPathSet {
   return $set
 }
 
+function Split-AiBrainFrontmatterInlineArray {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  $trimmed = $Value.Trim()
+  if (-not $trimmed.StartsWith('[') -or -not $trimmed.EndsWith(']')) {
+    throw "FRONTMATTER_YAML_INVALID"
+  }
+  $body = $trimmed.Substring(1, $trimmed.Length - 2)
+  if ([string]::IsNullOrWhiteSpace($body)) { return }
+  $items = New-Object System.Collections.ArrayList
+  $builder = New-Object System.Text.StringBuilder
+  [char]$quote = [char]0
+  $escaped = $false
+  for ($index = 0; $index -lt $body.Length; $index++) {
+    [char]$character = $body[$index]
+    if ($quote -eq [char]0x22) {
+      [void]$builder.Append($character)
+      if ($escaped) {
+        $escaped = $false
+      } elseif ($character -eq [char]0x5c) {
+        $escaped = $true
+      } elseif ($character -eq [char]0x22) {
+        $quote = [char]0
+      }
+      continue
+    }
+    if ($quote -eq [char]0x27) {
+      [void]$builder.Append($character)
+      if ($character -eq [char]0x27) {
+        if ($index + 1 -lt $body.Length -and $body[$index + 1] -eq [char]0x27) {
+          [void]$builder.Append($body[$index + 1])
+          $index++
+        } else {
+          $quote = [char]0
+        }
+      }
+      continue
+    }
+    if ($character -in @([char]0x22, [char]0x27)) {
+      $quote = $character
+      [void]$builder.Append($character)
+      continue
+    }
+    if ($character -eq ',') {
+      $item = $builder.ToString().Trim()
+      if ([string]::IsNullOrWhiteSpace($item)) { throw "FRONTMATTER_YAML_INVALID" }
+      [void]$items.Add($item)
+      [void]$builder.Clear()
+      continue
+    }
+    if ($character -in @('[', ']', '{', '}')) { throw "FRONTMATTER_YAML_INVALID" }
+    [void]$builder.Append($character)
+  }
+  if ($quote -ne [char]0 -or $escaped) { throw "FRONTMATTER_YAML_INVALID" }
+  $lastItem = $builder.ToString().Trim()
+  if ([string]::IsNullOrWhiteSpace($lastItem)) { throw "FRONTMATTER_YAML_INVALID" }
+  [void]$items.Add($lastItem)
+  return @($items)
+}
+
 function ConvertFrom-AiBrainFrontmatterScalar {
   param([Parameter(Mandatory = $true)][string]$Value)
   $value = $Value.Trim()
-  if ([string]::IsNullOrWhiteSpace($value) -or $value -match '^[|>&*!@`{}]' -or
+  if ([string]::IsNullOrWhiteSpace($value) -or $value -match '^[|>&*!@`{}#%]' -or
+      $value -match '^[-?:](?:\s|$)' -or
       $value.IndexOf([char]0) -ge 0 -or $value -match '[\x01-\x08\x0B\x0C\x0E-\x1F]') {
     throw "FRONTMATTER_YAML_INVALID"
   }
@@ -247,12 +307,8 @@ function ConvertFrom-AiBrainFrontmatterScalar {
     }
   }
   if ($value.StartsWith('[')) {
-    $quotedDouble = '"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"'
-    $quotedSingle = "'(?:[^']|'')*'"
-    $plainItem = '[A-Za-z0-9][A-Za-z0-9_.-]*'
-    $item = "(?:$plainItem|$quotedSingle|$quotedDouble)"
-    if ($value -notmatch "^\[\s*(?:$item(?:\s*,\s*$item)*)?\s*\]$") {
-      throw "FRONTMATTER_YAML_INVALID"
+    foreach ($item in @(Split-AiBrainFrontmatterInlineArray -Value $value)) {
+      [void](ConvertFrom-AiBrainFrontmatterScalar -Value ([string]$item))
     }
     return $value
   }
