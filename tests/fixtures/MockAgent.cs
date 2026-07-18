@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Text.RegularExpressions;
@@ -112,8 +113,60 @@ internal static class MockAgent
         return match.Success ? match.Groups[1].Value : "compile";
     }
 
+    private static string GetPromptField(string prompt, string name, string fallback)
+    {
+        Match match = Regex.Match(
+            prompt,
+            "\"" + Regex.Escape(name) + "\"\\s*:\\s*\"([^\"]*)\"",
+            RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups[1].Value : fallback;
+    }
+
+    private static string GetSha256(string value)
+    {
+        byte[] bytes = new UTF8Encoding(false).GetBytes(value);
+        using (SHA256 sha = SHA256.Create())
+        {
+            byte[] hash = sha.ComputeHash(bytes);
+            StringBuilder builder = new StringBuilder(hash.Length * 2);
+            foreach (byte item in hash)
+            {
+                builder.Append(item.ToString("x2"));
+            }
+            return builder.ToString();
+        }
+    }
+
+    private static string NewWriteChangeSet(
+        string operation,
+        string path,
+        string title,
+        string type)
+    {
+        string content =
+            "---\n" +
+            "title: " + title + "\n" +
+            "date_modified: 2026-07-17\n" +
+            "type: " + type + "\n" +
+            "status: complete\n" +
+            "---\n" +
+            "# " + title + "\n";
+        return "{\"schemaVersion\":\"ai-brain-change-set-v1\",\"operation\":" +
+            EscapeJson(operation) +
+            ",\"changes\":[{\"path\":" + EscapeJson(path) +
+            ",\"action\":\"write\",\"content\":" + EscapeJson(content) + "}]}";
+    }
+
     private static string GetChangeSet(string prompt, string operation)
     {
+        if (prompt.IndexOf("MOCK_RESERVED_PATH", StringComparison.Ordinal) >= 0)
+        {
+            return NewWriteChangeSet(operation, "wiki/index.md", "Reserved", "index");
+        }
+        if (prompt.IndexOf("MOCK_CONFLICT", StringComparison.Ordinal) >= 0)
+        {
+            return NewWriteChangeSet(operation, "wiki/conflict.md", "Conflict", "synthesis");
+        }
         if (prompt.IndexOf("MOCK_WRITE", StringComparison.Ordinal) < 0)
         {
             return "{\"schemaVersion\":\"ai-brain-change-set-v1\",\"operation\":" +
@@ -122,36 +175,44 @@ internal static class MockAgent
 
         string leaf = operation == "lint" ? "generated-lint.md" : "generated.md";
         string title = operation == "lint" ? "Generated Lint" : "Generated";
-        string content =
-            "---\n" +
-            "title: " + title + "\n" +
-            "date_modified: 2026-07-17\n" +
-            "type: synthesis\n" +
-            "status: complete\n" +
-            "---\n" +
-            "# " + title + "\n";
-        return "{\"schemaVersion\":\"ai-brain-change-set-v1\",\"operation\":" +
-            EscapeJson(operation) +
-            ",\"changes\":[{\"path\":\"wiki/" + leaf +
-            "\",\"action\":\"write\",\"content\":" + EscapeJson(content) + "}]}";
+        return NewWriteChangeSet(operation, "wiki/" + leaf, title, "synthesis");
     }
 
     private static string FindRuntimeRoot()
     {
-        DirectoryInfo run = new DirectoryInfo(Environment.CurrentDirectory);
-        if (run.Parent == null || run.Parent.Parent == null)
+        DirectoryInfo current = new DirectoryInfo(Environment.CurrentDirectory);
+        while (current != null)
         {
-            return Environment.CurrentDirectory;
+            if (File.Exists(Path.Combine(current.FullName, "config.json")))
+            {
+                return current.FullName;
+            }
+            current = current.Parent;
         }
-        return run.Parent.Parent.FullName;
+        return Environment.CurrentDirectory;
+    }
+
+    private static int GetNextCallNumber(string runtimeRoot)
+    {
+        string path = Path.Combine(runtimeRoot, "mock-agent-call-count.txt");
+        int current = 0;
+        if (File.Exists(path))
+        {
+            Int32.TryParse(File.ReadAllText(path).Trim(), out current);
+        }
+        current++;
+        File.WriteAllText(path, current.ToString() + "\n", new UTF8Encoding(false));
+        return current;
     }
 
     private static void WriteProbe(
         string runtimeRoot,
         string[] args,
+        string prompt,
         string operation,
         bool hadBom,
-        bool isCodex)
+        bool isCodex,
+        int callNumber)
     {
         string path = Path.Combine(
             runtimeRoot,
@@ -162,6 +223,13 @@ internal static class MockAgent
             "\"target\":" + EscapeJson(isCodex ? "codex" : "claude") + "," +
             "\"stdinHadBom\":" + (hadBom ? "true" : "false") + "," +
             "\"hasConsoleWindow\":" + (GetConsoleWindow() == IntPtr.Zero ? "false" : "true") + "," +
+            "\"mode\":" + EscapeJson(GetPromptField(prompt, "mode", "worker")) + "," +
+            "\"chunkKey\":" + EscapeJson(GetPromptField(prompt, "chunkKey", "root")) + "," +
+            "\"promptBytes\":" + new UTF8Encoding(false).GetByteCount(prompt).ToString() + "," +
+            "\"promptSha256\":" + EscapeJson(GetSha256(prompt)) + "," +
+            "\"containsSecretSentinel\":" +
+                (prompt.IndexOf("TOP_SECRET_SENTINEL_123", StringComparison.Ordinal) >= 0 ? "true" : "false") + "," +
+            "\"callNumber\":" + callNumber.ToString() + "," +
             "\"argumentCount\":" + args.Length.ToString() +
             "}\n";
         File.WriteAllText(path, json, new UTF8Encoding(false));
@@ -276,16 +344,26 @@ internal static class MockAgent
         string prompt = ReadStandardInput(out hadBom);
         string operation = GetOperation(prompt);
         bool isCodex = args.Length > 0 && args[0] == "exec";
+        string runtimeRoot = FindRuntimeRoot();
+        int callNumber = GetNextCallNumber(runtimeRoot);
         if (prompt.IndexOf("MOCK_TIMEOUT_CHILD", StringComparison.Ordinal) >= 0)
         {
             string childPath = Path.Combine(
-                FindRuntimeRoot(),
+                runtimeRoot,
                 "mock-agent-child.json");
             SpawnSleepingChild(childPath);
             Thread.Sleep(120000);
             return 0;
         }
-        WriteProbe(FindRuntimeRoot(), args, operation, hadBom, isCodex);
+        WriteProbe(runtimeRoot, args, prompt, operation, hadBom, isCodex, callNumber);
+        string failOnSecond = Path.Combine(runtimeRoot, "mock-agent-fail-on-call-2.flag");
+        string failCompleted = Path.Combine(runtimeRoot, "mock-agent-fail-on-call-2.done");
+        if (callNumber == 2 && File.Exists(failOnSecond) && !File.Exists(failCompleted))
+        {
+            File.WriteAllText(failCompleted, "done\n", new UTF8Encoding(false));
+            Console.Error.WriteLine("mock fail once");
+            return 9;
+        }
         string changeSet = GetChangeSet(prompt, operation);
 
         if (isCodex)

@@ -73,6 +73,10 @@ Obsidian vault上にKarpathy提唱のAI外部脳システムを構築・運用�
 
 setupのdry-runで初回整理の件数と容量を取得する。初回大量整理が必要なら見積りを示し、同じHuman Gateで承認された場合だけ`-ApproveInitialBulk`を付ける。setup、Scheduled Task、runner自身は`Read-Host`を使わない。
 
+見積りでは、vault全体、AIへ渡す安全なテキスト、除外件数、分割数、wiki変更上限を分ける。秘密情報らしい内容や拒否対象名を持つファイルは丸ごと除外し、値・本文・pathをprompt、state、report、logへ残さない。除外したwiki pathはAIのwrite/delete対象からも外す。
+
+安全な入力は、設定したprompt byte上限で決定的に分割する。完了済みchunkは同じ入力で再実行しない。全chunkの重複path、scope、Markdown、件数、容量を検証し、合格後だけ1回のwiki transactionで反映する。
+
 ### 自然言語の操作
 
 利用者の言葉を次へ正規化する。
@@ -238,3 +242,4 @@ $VaultArg = "vault=<VAULT_NAME>"
 | 2026-04-13 | ループ運用セクション追加 | /loop /wiki-compile, /loop /wiki-lint のセルフペース自動化対応 |
 | 2026-04-14 | inbox/バッチIngest機能追加 | inbox/フォルダ新設、/wiki-ingest-inboxコマンド追加 |
 | 2026-07-17 | 睡眠モード追加 | 4時間ごとの記憶整理、毎日17:00の健康診断、非表示実行、安全な復元、Human Gateを統合 |
+| 2026-07-18 | 安全な除外と大規模vault分割を追加 | 秘密情報候補を送信せず、分割再開後もwikiを1回だけ安全に反映するため |

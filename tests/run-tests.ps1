@@ -40,6 +40,7 @@ status: complete
 . (Join-Path $script:LibraryRoot 'AiBrain.Transaction.ps1')
 . (Join-Path $script:LibraryRoot 'AiBrain.Requests.ps1')
 . (Join-Path $script:LibraryRoot 'AiBrain.Tasks.ps1')
+. (Join-Path $script:LibraryRoot 'AiBrain.Batch.ps1')
 
 function Assert-True {
   param([Parameter(Mandatory = $true)][bool]$Condition, [string]$Message = 'Expected true.')
@@ -104,6 +105,7 @@ function Test-Case {
       Name = $Name
       Message = [string]$_.Exception.Message
       Position = [string]$_.InvocationInfo.PositionMessage
+      Stack = [string]$_.ScriptStackTrace
     })
     [Console]::Out.WriteLine("[FAIL] $Name :: $([string]$_.Exception.Message)")
   }
@@ -132,6 +134,7 @@ function New-TestLimits {
     timeoutSeconds = 60
     maxSourceFiles = 100
     maxSourceBytes = 1048576
+    maxPromptBytes = 262144
     maxChangeFiles = 20
     maxChangeRatio = 1.0
     maxChangeBytes = 1048576
@@ -165,7 +168,7 @@ function New-TransactionFixture {
 function New-ChangeSet {
   param(
     [ValidateSet('compile', 'lint')][string]$Operation = 'compile',
-    [Parameter(Mandatory = $true)][object[]]$Changes
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Changes
   )
   return [pscustomobject]@{
     schemaVersion = 'ai-brain-change-set-v1'
@@ -293,6 +296,7 @@ function Install-TestRuntimePackage {
     'scripts/lib/AiBrain.Requests.ps1',
     'scripts/lib/AiBrain.Schedule.ps1',
     'scripts/lib/AiBrain.Tasks.ps1',
+    'scripts/lib/AiBrain.Batch.ps1',
     'scripts/lib/AiBrain.Transaction.ps1'
   )
   $manifestFiles = New-Object System.Collections.ArrayList
@@ -514,6 +518,16 @@ try {
   }
 
   if ($Suite -in @('All', 'Unit')) {
+    Test-Case -Name 'new config keeps enough prompt headroom for the verified large note' -Action {
+      $vault = New-TestVault -Name 'default-prompt-budget'
+      $config = New-AiBrainConfig `
+        -VaultPath $vault `
+        -Target codex `
+        -AgentExecutable $script:MockAgentExe `
+        -PackageId ('a' * 64)
+      Assert-Equal ([long]655360) ([long]$config.limits.maxPromptBytes)
+    }
+
     Test-Case -Name 'compile schedule uses one current four-hour slot' -Action {
       $now = [DateTime]::SpecifyKind([datetime]'2026-07-17T10:15:00', [DateTimeKind]::Utc)
       $slot = Get-AiBrainCompileSlot -NowUtc $now -IntervalHours 4
@@ -828,20 +842,204 @@ See [[concepts/topic]].
       }
     }
 
-    Test-Case -Name 'source bundle rejects denied files and source secrets' -Action {
-      $fixture = New-TransactionFixture -Name 'source-reject'
+    Test-Case -Name 'source bundle excludes denied names and secret content without staging them' -Action {
+      $fixture = New-TransactionFixture -Name 'source-exclude'
       Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\.env') -Text 'SAFE_NAME_ONLY'
-      $run = New-AiBrainRunDirectory -Paths $fixture.Paths -RunId ([Guid]::NewGuid().ToString('N'))
-      Assert-Throws -Code 'SOURCE_DENIED_FILE' -Action {
-        New-AiBrainSourceBundle -Config $fixture.Config -RunDirectory $run | Out-Null
-      }
-      Remove-Item -LiteralPath (Join-Path $fixture.Vault 'main\.env') -Force
       Write-AiBrainTextAtomic `
         -Path (Join-Path $fixture.Vault 'main\note.md') `
         -Text 'password=abcdefghijklmnopqrstuv'
-      $runTwo = New-AiBrainRunDirectory -Paths $fixture.Paths -RunId ([Guid]::NewGuid().ToString('N'))
-      Assert-Throws -Code 'SOURCE_SECRET_DETECTED' -Action {
-        New-AiBrainSourceBundle -Config $fixture.Config -RunDirectory $runTwo | Out-Null
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'wiki\concepts\protected.md') `
+        -Text "password=TOP_SECRET_SENTINEL_1234567890`n[[missing]]`n"
+      $run = New-AiBrainRunDirectory -Paths $fixture.Paths -RunId ([Guid]::NewGuid().ToString('N'))
+      $bundle = New-AiBrainSourceBundle -Config $fixture.Config -RunDirectory $run
+      Assert-Equal 2 ([int]$bundle.includedCount)
+      Assert-Equal 3 ([int]$bundle.excludedCount)
+      Assert-Equal 1 ([int]$bundle.excludedByNameCount)
+      Assert-Equal 2 ([int]$bundle.excludedByContentCount)
+      Assert-False (Test-Path -LiteralPath (Join-Path $run 'main\.env'))
+      Assert-False (Test-Path -LiteralPath (Join-Path $run 'main\note.md'))
+      Assert-False (Test-Path -LiteralPath (Join-Path $run 'wiki\concepts\protected.md'))
+      Assert-Equal 'wiki/concepts/protected.md' (@($bundle.protectedWikiPaths) -join ',')
+
+      $protectedSet = Get-AiBrainProtectedWikiPathSet -SourceInventory $bundle
+      $protectedChange = New-ChangeSet -Changes @(
+        (New-WriteChange -Path 'wiki/concepts/protected.md' -Content $script:TopicContent)
+      )
+      $filtered = Test-AiBrainChunkChangeSet `
+        -ChangeSet $protectedChange `
+        -Operation compile `
+        -Scope all `
+        -ProtectedWikiPaths $protectedSet
+      Assert-Equal 0 (@($filtered.changes).Count)
+      $protectedSecretChange = New-ChangeSet -Changes @(
+        (New-WriteChange `
+          -Path 'wiki/concepts/protected.md' `
+          -Content ($script:TopicContent + "api_key=abcdefghijklmnopqrstuv`n"))
+      )
+      Assert-Throws -Code 'CHANGE_SET_SECRET_DETECTED' -Action {
+        Test-AiBrainChunkChangeSet `
+          -ChangeSet $protectedSecretChange `
+          -Operation compile `
+          -Scope all `
+          -ProtectedWikiPaths $protectedSet | Out-Null
+      }
+      Test-AiBrainChangeSet `
+        -ChangeSet (New-ChangeSet -Changes @()) `
+        -Config $fixture.Config `
+        -Operation compile `
+        -Scope all `
+        -RunDirectory $run `
+        -ExistingWikiCount 3 `
+        -ProtectedWikiPaths @($bundle.protectedWikiPaths) | Out-Null
+    }
+
+    Test-Case -Name 'chunk plan is deterministic complete and bounded by exact prompt bytes' -Action {
+      $fixture = New-TransactionFixture -Name 'chunk-plan'
+      $bundle = New-AiBrainSourceBundle -Config $fixture.Config -Operation compile -NoStage
+      $fixture.Config.limits.maxSourceFiles = 1
+      Set-AiBrainProperty -Object $fixture.Config -Name 'packageId' -Value ('a' * 64)
+      $first = New-AiBrainChunkPlan `
+        -Config $fixture.Config `
+        -Operation compile `
+        -Scope all `
+        -SourceInventory $bundle
+      $second = New-AiBrainChunkPlan `
+        -Config $fixture.Config `
+        -Operation compile `
+        -Scope all `
+        -SourceInventory $bundle
+      Assert-Equal ([string]$first.Fingerprint) ([string]$second.Fingerprint)
+      Assert-Equal 2 (@($first.Chunks).Count)
+      $active = @(Get-AiBrainChunksToProcess `
+        -Plan $first `
+        -Operation compile `
+        -State (New-AiBrainState -Enabled $true))
+      Assert-Equal 2 $active.Count
+      Assert-Equal `
+        (@($bundle.files | ForEach-Object { [string]$_.path } | Sort-Object) -join ',') `
+        (@($first.Chunks | ForEach-Object { $_.Files } | ForEach-Object { [string]$_.path } | Sort-Object) -join ',')
+      foreach ($chunk in @($first.Chunks)) {
+        $prompt = New-AiBrainAgentPrompt `
+          -Operation compile `
+          -Scope all `
+          -SourceBundle ([ordered]@{ schemaVersion = 1; files = @($chunk.Files) }) `
+          -Mode worker `
+          -ChunkKey ([string]$chunk.Key)
+        Assert-Equal ([long]$chunk.PromptBytes) (Get-AiBrainPromptByteCount -Prompt $prompt)
+        Assert-Equal ([string]$chunk.PromptHash) (Get-AiBrainStringSha256 -Text $prompt)
+        Assert-True ([long]$chunk.PromptBytes -le [long]$first.PromptBudgetBytes)
+      }
+      $firstBatchId = Get-AiBrainBatchId `
+        -Operation compile `
+        -Scope all `
+        -BaselineFingerprint ('c' * 64) `
+        -PromptBudgetBytes ([long]$first.PromptBudgetBytes) `
+        -PackageId ('a' * 64)
+      $secondBatchId = Get-AiBrainBatchId `
+        -Operation compile `
+        -Scope all `
+        -BaselineFingerprint ('c' * 64) `
+        -PromptBudgetBytes ([long]$first.PromptBudgetBytes) `
+        -PackageId ('b' * 64)
+      Assert-False ([string]::Equals($firstBatchId, $secondBatchId, [StringComparison]::Ordinal))
+      $fixture.Config.packageId = ('b' * 64)
+      $updatedPackagePlan = New-AiBrainChunkPlan `
+        -Config $fixture.Config `
+        -Operation compile `
+        -Scope all `
+        -SourceInventory $bundle
+      Assert-False ([string]::Equals(
+        [string]$first.Fingerprint,
+        [string]$updatedPackagePlan.Fingerprint,
+        [StringComparison]::Ordinal))
+      $firstWorkspace = Initialize-AiBrainBatchWorkspace `
+        -Paths $fixture.Paths `
+        -BatchId $firstBatchId
+      $firstJournal = Get-OrNewAiBrainBatchJournal `
+        -Workspace $firstWorkspace `
+        -BatchId $firstBatchId `
+        -Operation compile `
+        -Scope all `
+        -BaselineFingerprint ('c' * 64) `
+        -Plan $first `
+        -ActiveChunks @($first.Chunks)
+      Set-AiBrainBatchChunkCompleted `
+        -Journal $firstJournal `
+        -JournalPath $firstWorkspace.Journal `
+        -Ordinal 0 `
+        -ResultHash ('f' * 64)
+      $secondWorkspace = Initialize-AiBrainBatchWorkspace `
+        -Paths $fixture.Paths `
+        -BatchId $secondBatchId
+      $secondJournal = Get-OrNewAiBrainBatchJournal `
+        -Workspace $secondWorkspace `
+        -BatchId $secondBatchId `
+        -Operation compile `
+        -Scope all `
+        -BaselineFingerprint ('c' * 64) `
+        -Plan $updatedPackagePlan `
+        -ActiveChunks @($updatedPackagePlan.Chunks)
+      Assert-False ([string]::Equals(
+        [string]$firstWorkspace.Root,
+        [string]$secondWorkspace.Root,
+        [StringComparison]::OrdinalIgnoreCase))
+      Assert-Equal 0 ([int]$secondJournal.completedChunks)
+      Assert-Equal 'pending' ([string]@($secondJournal.chunks)[0].status)
+      Assert-Equal ('b' * 64) ([string]$secondJournal.packageId)
+      $checkpointState = New-AiBrainState -Enabled $true
+      $checkpointState.lastCompileInputFingerprint = ('d' * 64)
+      $checkpointState.lastCompileChunkFingerprints = @(
+        [ordered]@{ key = 'root'; fingerprint = ('e' * 64) }
+      )
+      Reset-AiBrainCompileCheckpoint -State $checkpointState
+      Assert-Equal $null $checkpointState.lastCompileInputFingerprint
+      Assert-Equal 0 (@($checkpointState.lastCompileChunkFingerprints).Count)
+
+      $oversized = [ordered]@{
+        schemaVersion = 1
+        files = @(
+          [ordered]@{
+            path = 'main/oversized.md'
+            sha256 = ('a' * 64)
+            bytes = 4096
+            content = ('x' * 4096)
+          }
+        )
+      }
+      $fixture.Config.limits.maxPromptBytes = 1024
+      Assert-Throws -Code 'SOURCE_FILE_PROMPT_LIMIT_EXCEEDED' -Action {
+        New-AiBrainChunkPlan `
+          -Config $fixture.Config `
+          -Operation compile `
+          -Scope all `
+          -SourceInventory $oversized | Out-Null
+      }
+    }
+
+    Test-Case -Name 'chunk validation blocks reserved and cross-chunk conflicting paths' -Action {
+      $protected = @{}
+      $reserved = New-ChangeSet -Changes @(
+        (New-WriteChange -Path 'wiki/index.md' -Content $script:IndexContent)
+      )
+      Assert-Throws -Code 'BATCH_RESERVED_PATH_CONFLICT' -Action {
+        Test-AiBrainChunkChangeSet `
+          -ChangeSet $reserved `
+          -Operation compile `
+          -Scope all `
+          -ProtectedWikiPaths $protected `
+          -Worker | Out-Null
+      }
+      $first = New-ChangeSet -Changes @(
+        (New-WriteChange -Path 'wiki/conflict.md' -Content $script:TopicContent)
+      )
+      $second = New-ChangeSet -Changes @(
+        (New-WriteChange -Path 'wiki/conflict.md' -Content $script:TopicContent)
+      )
+      Assert-Throws -Code 'BATCH_CHANGE_PATH_CONFLICT' -Action {
+        Merge-AiBrainChunkChangeSets `
+          -Operation compile `
+          -ChangeSets @($first, $second) | Out-Null
       }
     }
 
@@ -1032,6 +1230,9 @@ status: complete
       Initialize-AiBrainRuntimeDirectories -Paths $paths
       Assert-Throws -Code 'REQUEST_SCOPE_INVALID' -Action {
         New-AiBrainRequest -Paths $paths -Operation lint -Scope 'page:nope' | Out-Null
+      }
+      Assert-Throws -Code 'REQUEST_SCOPE_SENSITIVE' -Action {
+        New-AiBrainRequest -Paths $paths -Operation compile -Scope 'page:credentials' | Out-Null
       }
       $request = New-AiBrainRequest -Paths $paths -Operation compile -Scope 'page:concepts/topic'
       $runId = [Guid]::NewGuid().ToString('N')
@@ -1313,32 +1514,116 @@ status: complete
       Assert-True ($appliedIndex -gt $noChangeIndex)
     }
 
-    Test-Case -Name 'source safety failure stops once and clears active request identity' -Action {
+    Test-Case -Name 'source safety excludes sensitive files and continues without disclosure' -Action {
       $fixture = New-OrchestratorFixture -Target codex -RequestOperation compile
+      $safePath = Join-Path $fixture.Vault 'main\safe.md'
+      $secretPath = Join-Path $fixture.Vault 'main\protected.md'
+      $deniedPath = Join-Path $fixture.Vault 'main\.env'
+      Write-AiBrainTextAtomic -Path $safePath -Text 'MOCK_WRITE'
       Write-AiBrainTextAtomic `
-        -Path (Join-Path $fixture.Vault 'main\protected.md') `
-        -Text 'password=abcdefghijklmnopqrstuv'
+        -Path $secretPath `
+        -Text 'password=TOP_SECRET_SENTINEL_1234567890'
+      Write-AiBrainTextAtomic -Path $deniedPath -Text 'SAFE_NAME_ONLY'
+      $secretHash = Get-AiBrainFileSha256 -Path $secretPath
+      $deniedHash = Get-AiBrainFileSha256 -Path $deniedPath
       $fixture.Config.compileEnabled = $false
       $fixture.Config.lintEnabled = $false
       Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
       $request = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
       $result = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
-      Assert-Equal 1 ([int]$result.ExitCode)
+      Assert-Equal 0 ([int]$result.ExitCode)
       $state = Read-AiBrainState -Paths $fixture.Paths
-      Assert-Equal 'attention' ([string]$state.status)
-      Assert-Equal 'SOURCE_SECRET_DETECTED' ([string]$state.attentionCode)
+      Assert-Equal 'ready' ([string]$state.status)
+      Assert-Equal $null $state.attentionCode
       Assert-Equal 0 ([int]$state.sameFailureCount)
       Assert-Equal $null $state.runId
       Assert-Equal $null $state.activeRequestId
       Assert-Equal $null $state.child
+      Assert-Equal 2 ([int]$state.lastExcludedSourceCount)
+      Assert-Equal 1 ([int]$state.lastExcludedByNameCount)
+      Assert-Equal 1 ([int]$state.lastExcludedByContentCount)
       $location = Get-AiBrainRequestLocation `
         -Paths $fixture.Paths `
         -RequestId ([string]$request.requestId)
-      Assert-Equal 'failed' ([string]$location.Status)
-      Assert-Equal 'SOURCE_SECRET_DETECTED' ([string]$location.Request.resultCode)
+      Assert-Equal 'completed' ([string]$location.Status)
+      Assert-Equal 'applied' ([string]$location.Request.resultCode)
+      Assert-True (Test-Path -LiteralPath (Join-Path $fixture.Vault 'wiki\generated.md') -PathType Leaf)
+      Assert-Equal $secretHash (Get-AiBrainFileSha256 -Path $secretPath)
+      Assert-Equal $deniedHash (Get-AiBrainFileSha256 -Path $deniedPath)
+      $probes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File)
+      Assert-Equal 2 $probes.Count
+      foreach ($probePath in $probes) {
+        $probe = Read-AiBrainJson -Path $probePath.FullName
+        Assert-False ([bool]$probe.containsSecretSentinel)
+        Assert-True ([long]$probe.promptBytes -le [long]$fixture.Config.limits.maxPromptBytes)
+      }
       $report = Read-AiBrainUtf8 -Path (Join-Path $fixture.Vault 'wiki\_meta\sleep-report.md')
-      Assert-True $report.Contains((Get-AiBrainMessage -Name action_source_safety))
+      Assert-True $report.Contains(((Get-AiBrainMessage -Name report_excluded) -f 2))
       Assert-Equal $null (Test-AiBrainContainsSecret -Text $report)
+      Assert-False $report.Contains('protected.md')
+      Assert-False $report.Contains('TOP_SECRET_SENTINEL_123')
+      foreach ($file in Get-ChildItem -LiteralPath $fixture.Runtime -Recurse -File | Where-Object {
+        $_.Extension -in @('.json', '.jsonl', '.log', '.txt', '.ps1')
+      }) {
+        $text = Get-Content -LiteralPath $file.FullName -Raw
+        Assert-False $text.Contains('protected.md')
+        Assert-False $text.Contains('TOP_SECRET_SENTINEL_123')
+      }
+
+      $excludedFixture = New-OrchestratorFixture -Target claude -RequestOperation compile
+      Remove-Item -LiteralPath (Join-Path $excludedFixture.Vault 'wiki\index.md') -Force
+      Remove-Item -LiteralPath (Join-Path $excludedFixture.Vault 'wiki\concepts\topic.md') -Force
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $excludedFixture.Vault 'main\only-secret.md') `
+        -Text 'password=TOP_SECRET_SENTINEL_1234567890'
+      $excludedFixture.Config.compileEnabled = $false
+      $excludedFixture.Config.lintEnabled = $false
+      Write-AiBrainJsonAtomic -Path $excludedFixture.Paths.Config -Value $excludedFixture.Config
+      $excludedRequest = New-AiBrainRequest -Paths $excludedFixture.Paths -Operation compile -Scope all
+      $excludedResult = Invoke-OrchestratorProcessRaw -RuntimeRoot $excludedFixture.Runtime
+      Assert-Equal 0 ([int]$excludedResult.ExitCode)
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $excludedFixture.Runtime -Filter 'mock-agent-probe-*.json')).Count
+      $excludedState = Read-AiBrainState -Paths $excludedFixture.Paths
+      Assert-Equal 'all_sources_excluded' ([string]$excludedState.lastSkipReason)
+      Assert-Equal 1 ([int]$excludedState.lastExcludedSourceCount)
+      Assert-Equal 'completed' ([string](Get-AiBrainRequestLocation `
+        -Paths $excludedFixture.Paths `
+        -RequestId ([string]$excludedRequest.requestId)).Status)
+
+      $protectedScopeFixture = New-OrchestratorFixture -Target codex -RequestOperation compile
+      $protectedScopePath = Join-Path $protectedScopeFixture.Vault 'wiki\concepts\protected.md'
+      Write-AiBrainTextAtomic `
+        -Path $protectedScopePath `
+        -Text 'password=TOP_SECRET_SENTINEL_1234567890'
+      $protectedScopeHash = Get-AiBrainFileSha256 -Path $protectedScopePath
+      $protectedScopeFixture.Config.compileEnabled = $false
+      $protectedScopeFixture.Config.lintEnabled = $false
+      Write-AiBrainJsonAtomic `
+        -Path $protectedScopeFixture.Paths.Config `
+        -Value $protectedScopeFixture.Config
+      $protectedScopeRequest = New-AiBrainRequest `
+        -Paths $protectedScopeFixture.Paths `
+        -Operation compile `
+        -Scope 'page:concepts/protected'
+      $protectedScopeResult = Invoke-OrchestratorProcessRaw `
+        -RuntimeRoot $protectedScopeFixture.Runtime
+      Assert-Equal 0 ([int]$protectedScopeResult.ExitCode)
+      Assert-Equal 0 (@(
+        Get-ChildItem `
+          -LiteralPath $protectedScopeFixture.Runtime `
+          -Filter 'mock-agent-probe-*.json' `
+          -File
+      ).Count)
+      Assert-Equal $protectedScopeHash (Get-AiBrainFileSha256 -Path $protectedScopePath)
+      $protectedScopeLocation = Get-AiBrainRequestLocation `
+        -Paths $protectedScopeFixture.Paths `
+        -RequestId ([string]$protectedScopeRequest.requestId)
+      Assert-Equal 'completed' ([string]$protectedScopeLocation.Status)
+      Assert-Equal 'clean' ([string]$protectedScopeLocation.Request.resultCode)
+      $protectedScopeReport = Read-AiBrainUtf8 `
+        -Path (Join-Path $protectedScopeFixture.Vault 'wiki\_meta\sleep-report.md')
+      Assert-False $protectedScopeReport.Contains('protected.md')
+      Assert-False $protectedScopeReport.Contains('TOP_SECRET_SENTINEL_123')
     }
 
     Test-Case -Name 'Claude adapter skips scheduled no-change and applies manual request' -Action {
@@ -1361,11 +1646,15 @@ status: complete
         -Paths $fixture.Paths `
         -RequestId ([string]$request.requestId)).Status)
       $probes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json')
-      Assert-Equal 1 $probes.Count
-      $probe = Read-AiBrainJson -Path $probes[0].FullName
-      Assert-Equal 'claude' ([string]$probe.target)
-      Assert-False ([bool]$probe.stdinHadBom)
-      Assert-False ([bool]$probe.hasConsoleWindow)
+      Assert-Equal 2 $probes.Count
+      $probeValues = @($probes | ForEach-Object { Read-AiBrainJson -Path $_.FullName })
+      Assert-Equal 'finalizer,worker' (@($probeValues.mode | Sort-Object) -join ',')
+      foreach ($probe in $probeValues) {
+        Assert-Equal 'claude' ([string]$probe.target)
+        Assert-False ([bool]$probe.stdinHadBom)
+        Assert-False ([bool]$probe.hasConsoleWindow)
+        Assert-True ([long]$probe.promptBytes -le [long]$fixture.Config.limits.maxPromptBytes)
+      }
     }
 
     Test-Case -Name 'Codex adapter skips scheduled no-change and applies manual request' -Action {
@@ -1376,8 +1665,8 @@ status: complete
       Assert-True ($null -ne $state.lastCompileSlotUtc)
       Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json')).Count
       Write-AiBrainTextAtomic `
-        -Path (Join-Path $fixture.Vault 'main\manual.md') `
-        -Text 'MOCK_WRITE'
+        -Path (Join-Path $fixture.Vault 'wiki\concepts\topic.md') `
+        -Text ($script:TopicContent + "MOCK_WRITE`n")
       $fixture.Config.compileEnabled = $false
       $fixture.Config.lintEnabled = $false
       Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
@@ -1388,15 +1677,95 @@ status: complete
         -Paths $fixture.Paths `
         -RequestId ([string]$request.requestId)).Status)
       $probes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json')
-      Assert-Equal 1 $probes.Count
-      $probe = Read-AiBrainJson -Path $probes[0].FullName
-      Assert-Equal 'codex' ([string]$probe.target)
-      Assert-Equal 'lint' ([string]$probe.operation)
-      Assert-False ([bool]$probe.stdinHadBom)
-      Assert-False ([bool]$probe.hasConsoleWindow)
+      Assert-Equal 2 $probes.Count
+      $probeValues = @($probes | ForEach-Object { Read-AiBrainJson -Path $_.FullName })
+      Assert-Equal 'finalizer,worker' (@($probeValues.mode | Sort-Object) -join ',')
+      foreach ($probe in $probeValues) {
+        Assert-Equal 'codex' ([string]$probe.target)
+        Assert-Equal 'lint' ([string]$probe.operation)
+        Assert-False ([bool]$probe.stdinHadBom)
+        Assert-False ([bool]$probe.hasConsoleWindow)
+        Assert-True ([long]$probe.promptBytes -le [long]$fixture.Config.limits.maxPromptBytes)
+      }
     }
 
-    Test-Case -Name 'bulk estimate approval is bounded to 24 hours and consumed once' -Action {
+    Test-Case -Name 'large batch resumes completed chunks after one agent failure' -Action {
+      $fixture = New-OrchestratorFixture -Target codex -RequestOperation compile
+      $fixture.Config.compileEnabled = $false
+      $fixture.Config.lintEnabled = $false
+      $fixture.Config.limits.maxSourceFiles = 1
+      Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
+      Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\resume-a.md') -Text 'resume-a'
+      Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\resume-b.md') -Text 'resume-b'
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Runtime 'mock-agent-fail-on-call-2.flag') `
+        -Text "enabled`n"
+
+      $firstRequest = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
+      $firstRun = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
+      Assert-Equal 1 ([int]$firstRun.ExitCode)
+      Assert-Equal 'failed' ([string](Get-AiBrainRequestLocation `
+        -Paths $fixture.Paths `
+        -RequestId ([string]$firstRequest.requestId)).Status)
+      $batchRoots = @(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)
+      Assert-Equal 1 $batchRoots.Count
+      $journal = Read-AiBrainJson -Path (Join-Path $batchRoots[0].FullName 'batch.json')
+      Assert-Equal 4 ([int]$journal.totalChunks)
+      Assert-Equal 1 ([int]$journal.completedChunks)
+      $firstProbes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File)
+      Assert-Equal 2 $firstProbes.Count
+      $firstProbeValues = @($firstProbes | ForEach-Object { Read-AiBrainJson -Path $_.FullName } |
+        Sort-Object callNumber)
+      $completedKey = [string]$firstProbeValues[0].chunkKey
+      $failedKey = [string]$firstProbeValues[1].chunkKey
+
+      $secondRequest = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
+      $secondRun = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
+      Assert-Equal 0 ([int]$secondRun.ExitCode)
+      Assert-Equal 'completed' ([string](Get-AiBrainRequestLocation `
+        -Paths $fixture.Paths `
+        -RequestId ([string]$secondRequest.requestId)).Status)
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
+      $allProbes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File |
+        ForEach-Object { Read-AiBrainJson -Path $_.FullName })
+      Assert-Equal 5 $allProbes.Count
+      Assert-Equal 1 (@($allProbes | Where-Object { [string]$_.chunkKey -eq $completedKey })).Count
+      Assert-Equal 2 (@($allProbes | Where-Object { [string]$_.chunkKey -eq $failedKey })).Count
+      foreach ($probe in $allProbes) {
+        Assert-Equal 'worker' ([string]$probe.mode)
+        Assert-True ([long]$probe.promptBytes -le [long]$fixture.Config.limits.maxPromptBytes)
+      }
+      $state = Read-AiBrainState -Paths $fixture.Paths
+      Assert-Equal 4 ([int]$state.lastChunkCount)
+      Assert-Equal 4 ([int]$state.lastCompletedChunkCount)
+    }
+
+    Test-Case -Name 'cross-chunk path conflicts stop before one atomic apply' -Action {
+      $fixture = New-OrchestratorFixture -Target claude -RequestOperation compile
+      $fixture.Config.compileEnabled = $false
+      $fixture.Config.lintEnabled = $false
+      $fixture.Config.limits.maxSourceFiles = 1
+      Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
+      Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\conflict-a.md') -Text 'MOCK_CONFLICT'
+      Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\conflict-b.md') -Text 'MOCK_CONFLICT'
+      $before = Get-AiBrainManifestFingerprint -Manifest (
+        Get-AiBrainVaultManifest -VaultPath $fixture.Vault)
+      $request = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
+      $result = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
+      Assert-Equal 1 ([int]$result.ExitCode)
+      $location = Get-AiBrainRequestLocation `
+        -Paths $fixture.Paths `
+        -RequestId ([string]$request.requestId)
+      Assert-Equal 'failed' ([string]$location.Status)
+      Assert-Equal 'BATCH_CHANGE_PATH_CONFLICT' ([string]$location.Request.resultCode)
+      Assert-False (Test-Path -LiteralPath (Join-Path $fixture.Vault 'wiki\conflict.md'))
+      Assert-Equal $before (Get-AiBrainManifestFingerprint -Manifest (
+        Get-AiBrainVaultManifest -VaultPath $fixture.Vault))
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Journals -Filter '*.json' -File)).Count
+      Assert-Equal 1 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
+    }
+
+    Test-Case -Name 'bulk estimate approval is bounded consumed once and not required again' -Action {
       $fixture = New-OrchestratorFixture -Target claude -RequestOperation compile
       Set-TestFixtureOff -Fixture $fixture
       Install-TestRuntimePackage -Fixture $fixture
@@ -1418,7 +1787,11 @@ status: complete
       Assert-Equal 0 ([int]$statusResult.ExitCode) ('Status failed: ' + (Get-TestManagerError -Envelope $statusResult.Envelope))
       $status = Get-TestManagerResult -Envelope $statusResult.Envelope
       Assert-True ($null -ne $status.bulkEstimate) 'Status must include a bulk estimate.'
-      Assert-Equal 105 ([int]$status.bulkEstimate.estimatedSourceFiles)
+      Assert-Equal 107 ([int]$status.bulkEstimate.estimatedVaultFiles)
+      Assert-Equal 107 ([int]$status.bulkEstimate.estimatedSourceFiles)
+      Assert-Equal 0 ([int]$status.bulkEstimate.excludedSourceFiles)
+      Assert-True ([int]$status.bulkEstimate.plannedChunks -ge 1)
+      Assert-Equal ([long]$fixture.Config.limits.maxPromptBytes) ([long]$status.bulkEstimate.promptBudgetBytes)
       Assert-Equal 100 ([int]$status.bulkEstimate.proposedMaxChangeFiles)
       Assert-True ([long]$status.bulkEstimate.proposedMaxChangeBytes -le 1073741824) 'Estimated byte approval must not exceed 1 GiB.'
 
@@ -1457,12 +1830,11 @@ status: complete
         -Action RunNow `
         -Operation compile `
         -Scope all
-      Assert-Equal 1 ([int]$secondRun.ExitCode) ('Consumed approval must reject the next bulk run: {0}; {1}' -f
+      Assert-Equal 0 ([int]$secondRun.ExitCode) ('Completed initial approval must not block later runs: {0}; {1}' -f
         [string]$secondRun.Envelope.error, (Get-TestRequestDiagnostic -Paths $fixture.Paths))
-      $failedRequests = @(Get-ChildItem -LiteralPath $fixture.Paths.FailedRequests -Filter '*.json' -File)
-      Assert-Equal 1 $failedRequests.Count 'Rejected bulk run must create one failed request.'
-      $failedRequest = Read-AiBrainJson -Path $failedRequests[0].FullName
-      Assert-Equal 'INITIAL_BULK_APPROVAL_REQUIRED' ([string]$failedRequest.resultCode)
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.FailedRequests -Filter '*.json' -File)).Count
+      Assert-Equal 2 (@(Get-ChildItem -LiteralPath $fixture.Paths.CompletedRequests -Filter '*.json' -File)).Count
+      Assert-Equal 1 (@(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File)).Count
     }
 
     Test-Case -Name 'corrupt and unknown state require explicit reset approval and create a backup' -Action {
@@ -1624,6 +1996,9 @@ if ($script:Failed.Count -gt 0) {
     [Console]::Out.WriteLine($failure.Message)
     if (-not [string]::IsNullOrWhiteSpace($failure.Position)) {
       [Console]::Out.WriteLine($failure.Position)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($failure.Stack)) {
+      [Console]::Out.WriteLine($failure.Stack)
     }
   }
   exit 1

@@ -11,6 +11,10 @@ function Assert-AiBrainRequestScope {
     if ($Scope -in @('all', 'concepts', 'sources')) { return $true }
     if ($Scope.StartsWith('page:', [StringComparison]::OrdinalIgnoreCase)) {
       $path = $Scope.Substring(5)
+      if ($null -ne (Test-AiBrainContainsSecret -Text $path) -or
+          (Test-AiBrainDeniedFileName -Name ([IO.Path]::GetFileName($path.Replace('\', '/'))))) {
+        throw "REQUEST_SCOPE_SENSITIVE"
+      }
       if (Test-AiBrainRelativePath -Path $path) { return $true }
     }
   } elseif ($Scope -in @('all', 'links', 'frontmatter', 'stale', 'naming')) {

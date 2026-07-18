@@ -127,6 +127,7 @@ try {
     'scripts\lib\AiBrain.Requests.ps1',
     'scripts\lib\AiBrain.Schedule.ps1',
     'scripts\lib\AiBrain.Tasks.ps1',
+    'scripts\lib\AiBrain.Batch.ps1',
     'scripts\lib\AiBrain.Transaction.ps1'
   )) {
     if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $relative) -PathType Leaf)) {

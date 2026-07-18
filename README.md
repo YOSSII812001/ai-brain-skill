@@ -16,6 +16,8 @@ This release makes the skill easier to install, safer to run, and harder to acci
 | Reference files | Root references and packaged skill references could drift apart | `scripts/check-reference-parity.ps1` verifies both copies match | Fixes made for real use are not lost in the next distribution |
 | Scheduled runs | Users had to remember compile and lint commands | Sleep Mode compiles every 4 hours and lints daily at 17:00 by default | The external brain maintains itself in the background |
 | Background execution | A PowerShell window could flash when a task started | One hidden S4U task, a hidden bootstrap, and a Job Object control the full child process tree | After the interactive setup, scheduled and "run now" paths do not open or close a terminal window |
+| Sensitive notes | One secret-like source stopped the whole maintenance cycle | Files with a denied name or secret-like content are excluded as a whole before staging or prompting | Safe notes continue to be organized without copying the excluded path or content into AI prompts or logs |
+| Large vaults | One prompt had to hold the full text input | Compile and lint use deterministic, prompt-bounded chunks with checkpoints | Interrupted work resumes from the unfinished chunk and the vault is still updated only once |
 | Recovery | A failed run could leave partial changes or an unexplained stop | Staging, journals, rollback, a daily report, and `wiki-sleep doctor` provide recovery | The vault stays usable and tells the user one next action |
 | Validation | Broken links, stale strings, script syntax, and file-count drift were manual checks | `scripts/validate-repo.ps1` and GitHub Actions run the same lightweight checks | Pull requests get a repeatable safety net |
 | Self-improvement | Lint findings stopped at vault cleanup | Repeated structural findings can now become skill improvement drafts | The skill can improve its own instructions instead of only patching one note |
@@ -181,9 +183,15 @@ Sleep Mode is the normal operating mode on Windows. It treats compile like the b
 
 One Task Scheduler task carries both triggers. It uses S4U, `-WindowStyle Hidden`, a hidden task setting, `CreateNoWindow`, and a Windows Job Object. Windows may show one administrator confirmation during the interactive initial setup. After registration, the release gate verifies that scheduled and "run now" paths do not show a terminal. The task does not wake a sleeping PC.
 
-The runtime first detects whether source content changed. If nothing changed, compile finishes without calling the AI agent. Lint still runs once per day. Only `wiki/` is writable; `main/` and `raw/` remain read-only. Changes are staged and validated, then applied with a per-file journal and rollback verification.
+The runtime first detects whether source content changed. If nothing changed, compile finishes without calling the AI agent. Lint still runs once per day.
 
-Users do not need to remember how the system works. Open `wiki/_meta/sleep-report.md` to see the latest result, the next compile and lint, any automatic recovery, and—only when needed—one action to take.
+Before either operation calls the AI, the runtime excludes any text file whose name is denied or whose content looks like a secret. It excludes the whole file, keeps the original unchanged, and reports only counts. An excluded wiki page is also protected from AI writes and deletes.
+
+The remaining safe input is divided by a stable path hash. Every serialized prompt must fit the configured byte budget. Completed chunks are checkpointed, so the same input resumes without repeating finished AI calls. Workers cannot edit `wiki/index.md` or `wiki/log.md`; one final pass owns those shared files. Duplicate paths across chunks stop the run before the vault changes.
+
+Only `wiki/` is writable; `main/` and `raw/` remain read-only. All chunk results are merged in runtime staging, validated as one change set, and then applied in one journaled transaction. If validation or the final fingerprint check fails, rollback restores the full pre-run manifest.
+
+Users do not need to remember how the system works. Open `wiki/_meta/sleep-report.md` to see the latest result, the next compile and lint, the safe AI input count, excluded-file count, chunk progress, any automatic recovery, and—only when needed—one action to take.
 
 Use the skill command for controls instead of editing Task Scheduler directly:
 

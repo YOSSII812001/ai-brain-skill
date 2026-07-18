@@ -10,10 +10,17 @@ compileは、人が睡眠中に記憶を整理するように、新しい情報�
 2. 未完了journalがあれば、新しい処理より先に復旧する。
 3. `main/`、`raw/`、`wiki/`のmanifestを比較する。
 4. 定期実行で変更がなければ、AIを呼ばず「確認済み・整理不要」と記録する。
-5. 変更があればruntime上の作業用コピーからJSON変更案を作る。
-6. 許可path、件数、容量、UTF-8、frontmatter、内部リンク、indexを検証する。
-7. baselineが変わっていないことを確認し、journalとbackupを作って`wiki/`だけへ反映する。
-8. 最終検証に失敗した場合は逆順に戻し、実行前hashとの一致を確認する。
+5. 拒否対象名や秘密情報らしい内容を持つファイルを丸ごと除外する。
+6. 残った入力を、promptのUTF-8 byte上限に収まる決定的なchunkへ分ける。
+7. 未完了batchがあれば、同じ入力の完了済みchunkを再利用する。
+8. 各chunkからJSON変更案を作る。workerは`wiki/index.md`と`wiki/log.md`を変更しない。
+9. 共有ファイルを最後の1回で整え、chunk間の同一path変更を拒否する。
+10. 全変更の許可path、件数、容量、UTF-8、frontmatter、内部リンク、indexをまとめて検証する。
+11. baselineが変わっていないことを確認し、journalとbackupを作って`wiki/`だけへ1回反映する。
+12. 最終検証に失敗した場合は逆順に戻し、実行前manifestとの一致を確認する。
+
+除外したファイルの値、本文、pathはprompt、state、report、logへ残しません。
+元ファイルは変更せず、除外したwiki pathへの変更も受け付けません。
 
 `wiki/_meta/.lock`を30分で削除する旧契約は使いません。30分を超える正常な処理も、process treeとmutexが生きている限り継続中として扱います。
 
