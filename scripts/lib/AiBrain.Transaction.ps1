@@ -143,6 +143,8 @@ function New-AiBrainAgentPrompt {
       (Get-AiBrainMessage -Name safety_layers),
       (Get-AiBrainMessage -Name safety_json),
       'Every written Markdown file must include title, date_modified, type, and status in simple YAML frontmatter',
+      'Set type exactly one of concept, entity, source, synthesis, output, index, log; use entity for people and organizations, and concept for procedures and methods',
+      'Set status exactly one of stub, draft, complete, stale',
       'Use flat YAML scalar fields or inline [item, item] arrays; quote array items containing spaces or non-ASCII text',
       'Set content to null for delete actions'
     )
@@ -319,6 +321,33 @@ function ConvertFrom-AiBrainFrontmatterScalar {
     throw "FRONTMATTER_YAML_INVALID"
   }
   return $value
+}
+
+function ConvertTo-AiBrainCanonicalFrontmatter {
+  param([Parameter(Mandatory = $true)][string]$Content)
+  $frontmatter = [regex]::Match($Content, '(?s)\A---\r?\n(?<yaml>.+?)\r?\n---\r?\n')
+  if (-not $frontmatter.Success) { return $Content }
+
+  $yaml = $frontmatter.Groups['yaml'].Value
+  $typeLines = [regex]::Matches($yaml, '(?m)^type:[ \t]*(?<value>[^\r\n]+)(?=\r?$)')
+  if ($typeLines.Count -ne 1) { return $Content }
+
+  try {
+    $sourceType = [string](ConvertFrom-AiBrainFrontmatterScalar -Value $typeLines[0].Groups['value'].Value)
+  } catch {
+    return $Content
+  }
+  $canonicalType = switch ($sourceType.ToLowerInvariant()) {
+    'organization' { 'entity' }
+    'procedure' { 'concept' }
+    default { $null }
+  }
+  if ($null -eq $canonicalType) { return $Content }
+
+  $absoluteIndex = $frontmatter.Groups['yaml'].Index + $typeLines[0].Index
+  return $Content.Substring(0, $absoluteIndex) +
+    ('type: {0}' -f $canonicalType) +
+    $Content.Substring($absoluteIndex + $typeLines[0].Length)
 }
 
 function Test-AiBrainFrontmatter {
