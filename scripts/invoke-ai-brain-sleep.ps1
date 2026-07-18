@@ -411,6 +411,12 @@ function Invoke-AiBrainOperation {
     }) +
     @($bundle.protectedWikiPaths)
   )
+  $existingWikiPathSet = @{}
+  foreach ($existingWikiPath in $existingWikiPaths) {
+    $existingWikiPathSet[
+      ([string]$existingWikiPath).Replace('\', '/').ToLowerInvariant()
+    ] = $true
+  }
   if (Test-AiBrainProtectedPageScope `
       -Operation $Operation `
       -Scope $Scope `
@@ -506,10 +512,12 @@ function Invoke-AiBrainOperation {
     -ActiveChunks $activeChunks `
     -RequestId $requestId
   $workerChangeSets = New-Object System.Collections.ArrayList
+  $claimedNewWikiPaths = @{}
   for ($index = 0; $index -lt $activeChunks.Count; $index++) {
     $chunk = $activeChunks[$index]
     $workerRetainPaths = @($chunk.Files | ForEach-Object { [string]$_.path })
     $workerAllowsNewPaths = $Operation -eq 'compile'
+    $workerExistingPaths = @($existingWikiPaths) + @($claimedNewWikiPaths.Values)
     $workerChangeLimit = Get-AiBrainWorkerChangeLimit `
       -TotalWorkers $activeChunks.Count `
       -Ordinal $index `
@@ -526,7 +534,7 @@ function Invoke-AiBrainOperation {
         -ProtectedWikiPaths $protectedWikiPaths `
         -Worker `
         -RetainPaths $workerRetainPaths `
-        -ExistingPaths $existingWikiPaths `
+        -ExistingPaths $workerExistingPaths `
         -AllowNewPaths:$workerAllowsNewPaths `
         -MaxChanges $workerChangeLimit
     } elseif ([string]$journalEntry.status -eq 'running' -and
@@ -541,7 +549,7 @@ function Invoke-AiBrainOperation {
           -ProtectedWikiPaths $protectedWikiPaths `
           -Worker `
           -RetainPaths $workerRetainPaths `
-          -ExistingPaths $existingWikiPaths `
+          -ExistingPaths $workerExistingPaths `
           -AllowNewPaths:$workerAllowsNewPaths `
           -MaxChanges $workerChangeLimit
         Set-AiBrainBatchChunkCompleted `
@@ -586,7 +594,7 @@ function Invoke-AiBrainOperation {
         -ProtectedWikiPaths $protectedWikiPaths `
         -Worker `
         -RetainPaths $workerRetainPaths `
-        -ExistingPaths $existingWikiPaths `
+        -ExistingPaths $workerExistingPaths `
         -AllowNewPaths:$workerAllowsNewPaths `
         -MaxChanges $workerChangeLimit
       Write-AiBrainTextAtomic -Path $outputPath -Text ($finalText.Trim() + "`n")
@@ -598,6 +606,15 @@ function Invoke-AiBrainOperation {
         -ResultHash $resultHash `
         -ChangeCount (@($validated.changes).Count) `
         -ChangeBytes (Get-AiBrainChangeSetByteCount -ChangeSet $validated)
+    }
+    if ($workerAllowsNewPaths) {
+      foreach ($change in @($validated.changes)) {
+        $key = ([string]$change.path).Replace('\', '/').ToLowerInvariant()
+        if (-not $existingWikiPathSet.ContainsKey($key) -and
+            -not $claimedNewWikiPaths.ContainsKey($key)) {
+          $claimedNewWikiPaths[$key] = [string]$change.path
+        }
+      }
     }
     [void]$workerChangeSets.Add($validated)
     Set-AiBrainProperty `

@@ -14,7 +14,7 @@ compileは、人が睡眠中に記憶を整理するように、新しい情報�
 6. 残った入力を、promptのUTF-8 byte上限に収まる決定的なchunkへ分ける。
 7. 未完了batchがあれば、同じ入力の完了済みchunkを再利用する。
 8. 各chunkからJSON変更案を作る。既存wikiはそのpageを入力に持つworkerだけが修正し、新規pageはchunkに直接根拠がある場合だけ作る。workerは`wiki/index.md`と`wiki/log.md`を変更しない。
-9. 共有ファイルを最後の1回で整え、chunk間の同一path変更を拒否する。
+9. 新規pageは決定的なchunk順で最初に採用したworkerへ割り当てる。後続workerの同一path候補は安全検証後に除外し、それでも残るchunk間の同一path変更は拒否する。
 10. 全変更の許可path、件数、容量、UTF-8、frontmatter、内部リンク、indexをまとめて検証する。
 11. baselineが変わっていないことを確認し、journalとbackupを作って`wiki/`だけへ1回反映する。
 12. 最終検証に失敗した場合は逆順に戻し、実行前manifestとの一致を確認する。

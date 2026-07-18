@@ -2058,7 +2058,7 @@ status: complete
       Assert-Equal 4 ([int]$state.lastCompletedChunkCount)
     }
 
-    Test-Case -Name 'cross-chunk path conflicts stop before one atomic apply' -Action {
+    Test-Case -Name 'compile workers claim a new page once in deterministic chunk order' -Action {
       $fixture = New-OrchestratorFixture -Target claude -RequestOperation compile
       $fixture.Config.compileEnabled = $false
       $fixture.Config.lintEnabled = $false
@@ -2070,23 +2070,38 @@ status: complete
         maxChangeBytes = [long]$fixture.Config.limits.maxChangeBytes
       })
       Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
-      Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\conflict-a.md') -Text 'MOCK_CONFLICT'
-      Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\conflict-b.md') -Text 'MOCK_CONFLICT'
-      $before = Get-AiBrainManifestFingerprint -Manifest (
-        Get-AiBrainVaultManifest -VaultPath $fixture.Vault)
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'main\new-conflict-a.md') `
+        -Text 'MOCK_NEW_CONFLICT'
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'main\new-conflict-b.md') `
+        -Text 'MOCK_NEW_CONFLICT'
       $request = New-AiBrainRequest -Paths $fixture.Paths -Operation compile -Scope all
       $result = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
-      Assert-Equal 1 ([int]$result.ExitCode)
+      Assert-Equal 0 ([int]$result.ExitCode)
       $location = Get-AiBrainRequestLocation `
         -Paths $fixture.Paths `
         -RequestId ([string]$request.requestId)
-      Assert-Equal 'failed' ([string]$location.Status)
-      Assert-Equal 'BATCH_CHANGE_PATH_CONFLICT' ([string]$location.Request.resultCode)
-      Assert-False (Test-Path -LiteralPath (Join-Path $fixture.Vault 'wiki\conflict.md'))
-      Assert-Equal $before (Get-AiBrainManifestFingerprint -Manifest (
-        Get-AiBrainVaultManifest -VaultPath $fixture.Vault))
-      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Journals -Filter '*.json' -File)).Count
-      Assert-Equal 1 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
+      Assert-Equal 'completed' ([string]$location.Status)
+      Assert-Equal 'applied' ([string]$location.Request.resultCode)
+      $page = Read-AiBrainUtf8 -Path (Join-Path $fixture.Vault 'wiki\new-conflict.md')
+      $workerProbes = @(
+        Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File |
+          ForEach-Object { Read-AiBrainJson -Path $_.FullName } |
+          Where-Object { [string]$_.mode -eq 'worker' } |
+          Sort-Object callNumber
+      )
+      $conflictProbes = @($workerProbes | Where-Object {
+        [bool]$_.containsNewConflict
+      })
+      Assert-Equal 2 $conflictProbes.Count
+      Assert-True (
+        ([string]$page).Contains(
+          "# New Conflict $([string]$conflictProbes[0].chunkKey)`n"))
+      Assert-False (
+        ([string]$page).Contains(
+          "# New Conflict $([string]$conflictProbes[1].chunkKey)`n"))
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
     }
 
     Test-Case -Name 'lint workers retain only their input pages before conflict merge' -Action {

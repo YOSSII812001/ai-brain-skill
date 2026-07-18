@@ -167,6 +167,15 @@ internal static class MockAgent
         {
             return NewWriteChangeSet(operation, "wiki/conflict.md", "Conflict", "synthesis");
         }
+        if (prompt.IndexOf("MOCK_NEW_CONFLICT", StringComparison.Ordinal) >= 0)
+        {
+            string chunkKey = GetPromptField(prompt, "chunkKey", "root");
+            return NewWriteChangeSet(
+                operation,
+                "wiki/new-conflict.md",
+                "New Conflict " + chunkKey,
+                "synthesis");
+        }
         if (prompt.IndexOf("MOCK_EXISTING_CONFLICT", StringComparison.Ordinal) >= 0)
         {
             return NewWriteChangeSet(operation, "wiki/concepts/topic.md", "Existing Conflict", "concept");
@@ -233,6 +242,8 @@ internal static class MockAgent
             "\"promptSha256\":" + EscapeJson(GetSha256(prompt)) + "," +
             "\"containsSecretSentinel\":" +
                 (prompt.IndexOf("TOP_SECRET_SENTINEL_123", StringComparison.Ordinal) >= 0 ? "true" : "false") + "," +
+            "\"containsNewConflict\":" +
+                (prompt.IndexOf("MOCK_NEW_CONFLICT", StringComparison.Ordinal) >= 0 ? "true" : "false") + "," +
             "\"callNumber\":" + callNumber.ToString() + "," +
             "\"argumentCount\":" + args.Length.ToString() +
             "}\n";
