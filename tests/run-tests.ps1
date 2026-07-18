@@ -904,6 +904,43 @@ source_paths:
       }
     }
 
+    Test-Case -Name 'chunk change-set canonicalizes supported type aliases and rejects unknown types' -Action {
+      $organization = $script:TopicContent.Replace(
+        'type: concept',
+        'type: organization').Replace(
+        '# Topic',
+        "# Topic`ntype: organization in body")
+      $procedure = $script:TopicContent.Replace('type: concept', 'type: "procedure"')
+      $normalized = Test-AiBrainChunkChangeSet `
+        -ChangeSet (New-ChangeSet -Changes @(
+          (New-WriteChange -Path 'wiki/organizations/example.md' -Content $organization),
+          (New-WriteChange -Path 'wiki/procedures/example.md' -Content $procedure)
+        )) `
+        -Operation compile `
+        -Scope all `
+        -ProtectedWikiPaths @{}
+      Assert-Match `
+        -Value ([string]$normalized.changes[0].content) `
+        -Pattern '(?m)^type: entity\r?$'
+      Assert-Match `
+        -Value ([string]$normalized.changes[0].content) `
+        -Pattern '(?m)^type: organization in body\r?$'
+      Assert-Match `
+        -Value ([string]$normalized.changes[1].content) `
+        -Pattern '(?m)^type: concept\r?$'
+
+      $unknown = $script:TopicContent.Replace('type: concept', 'type: event')
+      Assert-Throws -Code 'FRONTMATTER_TYPE_INVALID' -Action {
+        Test-AiBrainChunkChangeSet `
+          -ChangeSet (New-ChangeSet -Changes @(
+            (New-WriteChange -Path 'wiki/events/example.md' -Content $unknown)
+          )) `
+          -Operation compile `
+          -Scope all `
+          -ProtectedWikiPaths @{} | Out-Null
+      }
+    }
+
     Test-Case -Name 'source bundle excludes denied names and secret content without staging them' -Action {
       $fixture = New-TransactionFixture -Name 'source-exclude'
       Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\.env') -Text 'SAFE_NAME_ONLY'
@@ -991,6 +1028,14 @@ source_paths:
         Assert-Equal ([long]$chunk.PromptBytes) (Get-AiBrainPromptByteCount -Prompt $prompt)
         Assert-Equal ([string]$chunk.PromptHash) (Get-AiBrainStringSha256 -Text $prompt)
         Assert-True ([long]$chunk.PromptBytes -le [long]$first.PromptBudgetBytes)
+        $promptContract = $prompt | ConvertFrom-Json
+        $safetyContract = @($promptContract.safety) -join "`n"
+        Assert-Match `
+          -Value $safetyContract `
+          -Pattern 'type exactly one of concept, entity, source, synthesis, output, index, log'
+        Assert-Match `
+          -Value $safetyContract `
+          -Pattern 'status exactly one of stub, draft, complete, stale'
       }
       $firstBatchId = Get-AiBrainBatchId `
         -Operation compile `

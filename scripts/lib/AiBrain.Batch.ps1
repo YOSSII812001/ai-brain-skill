@@ -588,6 +588,7 @@ function Test-AiBrainChunkChangeSet {
     if ($seen.ContainsKey($key)) { throw "BATCH_CHANGE_PATH_CONFLICT" }
     $seen[$key] = $true
     if ($action -eq 'write') {
+      $text = ConvertTo-AiBrainCanonicalFrontmatter -Content $text
       Test-AiBrainFrontmatter -Content $text | Out-Null
       [void]$safeChanges.Add([pscustomobject]@{ path = $path; action = 'write'; content = $text })
     } else {
