@@ -145,6 +145,8 @@ function New-AiBrainAgentPrompt {
       'Every written Markdown file must include title, date_modified, type, and status in simple YAML frontmatter',
       'Set type exactly one of concept, entity, source, synthesis, output, index, log; use entity for people and organizations, and concept for procedures and methods',
       'Set status exactly one of stub, draft, complete, stale',
+      'Order changes from highest to lowest value; the coordinator may retain only a bounded share of each worker result',
+      'Use wiki links only for pages present in the input or returned changes; write plain text instead of an unresolved wiki link',
       'Use flat YAML scalar fields or inline [item, item] arrays; quote array items containing spaces or non-ASCII text',
       'Set content to null for delete actions'
     )
@@ -424,6 +426,24 @@ function Resolve-AiBrainMarkdownLinkKey {
   return $key
 }
 
+function Test-AiBrainWikiLinkTargetKnown {
+  param(
+    [Parameter(Mandatory = $true)][string]$Target,
+    [Parameter(Mandatory = $true)][hashtable]$KnownWikiPaths
+  )
+  $key = $Target.Trim().Replace('\', '/').ToLowerInvariant()
+  $fullKey = $key
+  if (-not $fullKey.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)) {
+    $fullKey += '.md'
+  }
+  if (-not $fullKey.StartsWith('wiki/', [StringComparison]::OrdinalIgnoreCase)) {
+    $fullKey = 'wiki/' + $fullKey.TrimStart('/')
+  }
+  return $KnownWikiPaths.ContainsKey($key) -or
+    $KnownWikiPaths.ContainsKey($fullKey) -or
+    $KnownWikiPaths.ContainsKey([IO.Path]::GetFileNameWithoutExtension($key))
+}
+
 function Test-AiBrainMarkdownLinks {
   param(
     [Parameter(Mandatory = $true)][string]$RelativePath,
@@ -436,15 +456,7 @@ function Test-AiBrainMarkdownLinks {
     if ([string]::IsNullOrWhiteSpace($target) -or [IO.Path]::IsPathRooted($target) -or $target.Contains('..')) {
       throw "WIKILINK_INVALID"
     }
-    $key = $target.ToLowerInvariant()
-    $fullKey = $key
-    if (-not $fullKey.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)) { $fullKey += '.md' }
-    if (-not $fullKey.StartsWith('wiki/', [StringComparison]::OrdinalIgnoreCase)) {
-      $fullKey = 'wiki/' + $fullKey.TrimStart('/')
-    }
-    if (-not $KnownWikiPaths.ContainsKey($key) -and
-        -not $KnownWikiPaths.ContainsKey($fullKey) -and
-        -not $KnownWikiPaths.ContainsKey([IO.Path]::GetFileNameWithoutExtension($key))) {
+    if (-not (Test-AiBrainWikiLinkTargetKnown -Target $target -KnownWikiPaths $KnownWikiPaths)) {
       throw "WIKILINK_TARGET_MISSING"
     }
   }
@@ -472,6 +484,43 @@ function Test-AiBrainMarkdownContent {
   Test-AiBrainMarkdownLinks -RelativePath $RelativePath -Content $Content -KnownWikiPaths $KnownWikiPaths
 }
 
+function Get-AiBrainEffectiveChangeLimits {
+  param(
+    [Parameter(Mandatory = $true)][object]$Config,
+    [Parameter(Mandatory = $true)][ValidateSet('compile', 'lint')][string]$Operation,
+    [int]$ExistingWikiCount = 0
+  )
+  $limits = $Config.limits
+  [int]$fileLimit = [int]$limits.maxChangeFiles
+  [long]$byteLimit = [long]$limits.maxChangeBytes
+  $bulkApprovalActive = $false
+  $bulkApproval = Get-AiBrainProperty $Config 'bulkApproval' $null
+  if ($Operation -eq 'compile' -and $null -ne $bulkApproval -and
+      -not [bool](Get-AiBrainProperty $bulkApproval 'consumed' $true)) {
+    $expires = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse(
+        [string](Get-AiBrainProperty $bulkApproval 'expiresUtc' ''),
+        [ref]$expires) -and
+        $expires.UtcDateTime -gt [DateTime]::UtcNow) {
+      $fileLimit = [int](Get-AiBrainProperty $bulkApproval 'maxChangeFiles' $fileLimit)
+      $byteLimit = [long](Get-AiBrainProperty $bulkApproval 'maxChangeBytes' $byteLimit)
+      $bulkApprovalActive = $true
+    }
+  }
+  $ratioLimit = [Math]::Max(
+    5,
+    [Math]::Ceiling([Math]::Max(1, $ExistingWikiCount) * [double]$limits.maxChangeRatio))
+  return [pscustomobject]@{
+    FileLimit = [int]$(if ($bulkApprovalActive) {
+      $fileLimit
+    } else {
+      [Math]::Min($fileLimit, $ratioLimit)
+    })
+    ByteLimit = $byteLimit
+    BulkApprovalActive = $bulkApprovalActive
+  }
+}
+
 function Test-AiBrainChangeSet {
   param(
     [Parameter(Mandatory = $true)][object]$ChangeSet,
@@ -483,24 +532,11 @@ function Test-AiBrainChangeSet {
     [string[]]$ProtectedWikiPaths = @()
   )
   $changes = @($ChangeSet.changes)
-  $limits = $Config.limits
-  [int]$fileLimit = [int]$limits.maxChangeFiles
-  [long]$byteLimit = [long]$limits.maxChangeBytes
-  $bulkApprovalActive = $false
-  $bulkApproval = Get-AiBrainProperty $Config 'bulkApproval' $null
-  if ($Operation -eq 'compile' -and $null -ne $bulkApproval -and
-      -not [bool](Get-AiBrainProperty $bulkApproval 'consumed' $true)) {
-    $expires = [DateTimeOffset]::MinValue
-    if ([DateTimeOffset]::TryParse([string](Get-AiBrainProperty $bulkApproval 'expiresUtc' ''), [ref]$expires) -and
-        $expires.UtcDateTime -gt [DateTime]::UtcNow) {
-      $fileLimit = [int](Get-AiBrainProperty $bulkApproval 'maxChangeFiles' $fileLimit)
-      $byteLimit = [long](Get-AiBrainProperty $bulkApproval 'maxChangeBytes' $byteLimit)
-      $bulkApprovalActive = $true
-    }
-  }
-  $ratioLimit = [Math]::Max(5, [Math]::Ceiling([Math]::Max(1, $ExistingWikiCount) * [double]$limits.maxChangeRatio))
-  $effectiveFileLimit = $(if ($bulkApprovalActive) { $fileLimit } else { [Math]::Min($fileLimit, $ratioLimit) })
-  if ($changes.Count -gt $effectiveFileLimit) {
+  $effectiveLimits = Get-AiBrainEffectiveChangeLimits `
+    -Config $Config `
+    -Operation $Operation `
+    -ExistingWikiCount $ExistingWikiCount
+  if ($changes.Count -gt [int]$effectiveLimits.FileLimit) {
     throw "CHANGE_SET_FILE_LIMIT_EXCEEDED"
   }
   $seen = @{}
@@ -540,7 +576,7 @@ function Test-AiBrainChangeSet {
       $known.Remove([IO.Path]::GetFileNameWithoutExtension($key))
     }
   }
-  if ($bytes -gt $byteLimit) { throw "CHANGE_SET_BYTE_LIMIT_EXCEEDED" }
+  if ($bytes -gt [long]$effectiveLimits.ByteLimit) { throw "CHANGE_SET_BYTE_LIMIT_EXCEEDED" }
   if (-not $known.ContainsKey('wiki/index.md')) { throw "INDEX_REQUIRED" }
   $changeByPath = @{}
   foreach ($change in $changes) {
@@ -548,6 +584,9 @@ function Test-AiBrainChangeSet {
     if ([string]$change.action -eq 'write') {
       Test-AiBrainMarkdownContent -RelativePath ([string]$change.path) -Content ([string]$change.content) -KnownWikiPaths $known
     }
+  }
+  if (@($changes | Where-Object { [string]$_.action -eq 'delete' }).Count -eq 0) {
+    return $true
   }
   $wikiRoot = Join-Path $RunDirectory 'wiki'
   foreach ($file in Get-ChildItem -LiteralPath $wikiRoot -Recurse -File -Filter '*.md' -ErrorAction Stop) {
