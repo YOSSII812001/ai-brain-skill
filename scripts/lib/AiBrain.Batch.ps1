@@ -15,6 +15,21 @@ function Get-AiBrainPromptLimitBytes {
   return [long](Get-AiBrainProperty $Config.limits 'maxPromptBytes' $fallback)
 }
 
+function Get-AiBrainWorkerChangeLimit {
+  param(
+    [Parameter(Mandatory = $true)][ValidateRange(1, 100000)][int]$TotalWorkers,
+    [Parameter(Mandatory = $true)][ValidateRange(0, 99999)][int]$Ordinal,
+    [Parameter(Mandatory = $true)][ValidateRange(0, 1000)][int]$MaxChangeFiles,
+    [ValidateRange(0, 2)][int]$FinalizerReserve = 2
+  )
+  if ($Ordinal -ge $TotalWorkers) { throw "BATCH_WORKER_ORDINAL_INVALID" }
+  $reserved = [Math]::Min($FinalizerReserve, $MaxChangeFiles)
+  $workerBudget = $MaxChangeFiles - $reserved
+  $base = [Math]::Floor($workerBudget / $TotalWorkers)
+  $extra = $workerBudget % $TotalWorkers
+  return [int]$base + $(if ($Ordinal -lt $extra) { 1 } else { 0 })
+}
+
 function Get-AiBrainPromptByteCount {
   param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Prompt)
   return [long]$script:AiBrainUtf8NoBom.GetByteCount($Prompt)
@@ -544,7 +559,8 @@ function Test-AiBrainChunkChangeSet {
     [Parameter(Mandatory = $true)][string]$Scope,
     [Parameter(Mandatory = $true)][hashtable]$ProtectedWikiPaths,
     [switch]$Worker,
-    [string[]]$AllowedPaths = @()
+    [string[]]$AllowedPaths = @(),
+    [ValidateRange(-1, 1000)][int]$MaxChanges = -1
   )
   $allowed = @{}
   foreach ($allowedPath in $AllowedPaths) {
@@ -595,10 +611,80 @@ function Test-AiBrainChunkChangeSet {
       [void]$safeChanges.Add([pscustomobject]@{ path = $path; action = 'delete'; content = $null })
     }
   }
+  $selectedChanges = @($safeChanges)
+  if ($MaxChanges -ge 0) {
+    $selectedChanges = @($selectedChanges | Select-Object -First $MaxChanges)
+  }
   return [pscustomobject]@{
     schemaVersion = 'ai-brain-change-set-v1'
     operation = $Operation
-    changes = @($safeChanges)
+    changes = $selectedChanges
+  }
+}
+
+function Repair-AiBrainChangeSetWikiLinks {
+  param(
+    [Parameter(Mandatory = $true)][object]$ChangeSet,
+    [Parameter(Mandatory = $true)][object]$SourceInventory
+  )
+  $known = @{}
+  foreach ($entry in @($SourceInventory.files)) {
+    $path = ([string]$entry.path).Replace('\', '/').ToLowerInvariant()
+    if ($path -notmatch '^wiki/.+\.md$') { continue }
+    $known[$path] = $true
+    $known[[IO.Path]::GetFileNameWithoutExtension($path)] = $true
+  }
+  foreach ($pathValue in @((Get-AiBrainProperty $SourceInventory 'protectedWikiPaths' @()))) {
+    $path = ([string]$pathValue).Replace('\', '/').ToLowerInvariant()
+    if ($path -notmatch '^wiki/.+\.md$') { continue }
+    $known[$path] = $true
+    $known[[IO.Path]::GetFileNameWithoutExtension($path)] = $true
+  }
+  foreach ($change in @($ChangeSet.changes)) {
+    $path = ([string]$change.path).Replace('\', '/').ToLowerInvariant()
+    if ([string]$change.action -eq 'write') {
+      $known[$path] = $true
+      $known[[IO.Path]::GetFileNameWithoutExtension($path)] = $true
+    } else {
+      $known.Remove($path)
+      $known.Remove([IO.Path]::GetFileNameWithoutExtension($path))
+    }
+  }
+
+  $changes = New-Object System.Collections.ArrayList
+  foreach ($change in @($ChangeSet.changes)) {
+    $content = $null
+    if ([string]$change.action -eq 'write') {
+      $content = [regex]::Replace(
+        [string]$change.content,
+        '!?\[\[(?<target>[^\]|#]+)(?:#[^\]|]*)?(?:\|(?<label>[^\]]+))?\]\]',
+        [Text.RegularExpressions.MatchEvaluator]{
+          param($linkMatch)
+          $target = $linkMatch.Groups['target'].Value.Trim().Replace('\', '/')
+          if ([string]::IsNullOrWhiteSpace($target) -or
+              [IO.Path]::IsPathRooted($target) -or
+              $target.Contains('..') -or
+              (Test-AiBrainWikiLinkTargetKnown -Target $target -KnownWikiPaths $known)) {
+            return $linkMatch.Value
+          }
+          $label = $(if ($linkMatch.Groups['label'].Success) {
+            $linkMatch.Groups['label'].Value.Trim()
+          } else {
+            $target
+          })
+          return $(if ([string]::IsNullOrWhiteSpace($label)) { $target } else { $label })
+        })
+    }
+    [void]$changes.Add([pscustomobject]@{
+      path = [string]$change.path
+      action = [string]$change.action
+      content = $content
+    })
+  }
+  return [pscustomobject]@{
+    schemaVersion = 'ai-brain-change-set-v1'
+    operation = [string]$ChangeSet.operation
+    changes = @($changes)
   }
 }
 

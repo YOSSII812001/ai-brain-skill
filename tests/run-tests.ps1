@@ -1036,6 +1036,12 @@ source_paths:
         Assert-Match `
           -Value $safetyContract `
           -Pattern 'status exactly one of stub, draft, complete, stale'
+        Assert-Match `
+          -Value $safetyContract `
+          -Pattern 'Order changes from highest to lowest value'
+        Assert-Match `
+          -Value $safetyContract `
+          -Pattern 'write plain text instead of an unresolved wiki link'
       }
       $firstBatchId = Get-AiBrainBatchId `
         -Operation compile `
@@ -1122,6 +1128,142 @@ source_paths:
           -Scope all `
           -SourceInventory $oversized | Out-Null
       }
+    }
+
+    Test-Case -Name 'worker change budgets are global deterministic and trim only after safety validation' -Action {
+      $limitConfig = [pscustomobject]@{ limits = New-TestLimits }
+      $limitConfig.limits.maxChangeFiles = 100
+      $limitConfig.limits.maxChangeRatio = 0.25
+      $normalLimits = Get-AiBrainEffectiveChangeLimits `
+        -Config $limitConfig `
+        -Operation compile `
+        -ExistingWikiCount 2
+      Assert-Equal 5 ([int]$normalLimits.FileLimit)
+      Assert-False ([bool]$normalLimits.BulkApprovalActive)
+      $smallVaultWorkerLimits = @(
+        0..33 | ForEach-Object {
+          Get-AiBrainWorkerChangeLimit `
+            -TotalWorkers 34 `
+            -Ordinal $_ `
+            -MaxChangeFiles ([int]$normalLimits.FileLimit)
+        }
+      )
+      Assert-Equal 3 ([int](($smallVaultWorkerLimits | Measure-Object -Sum).Sum))
+      Assert-Equal 3 (@($smallVaultWorkerLimits | Where-Object { $_ -eq 1 }).Count)
+      Assert-Equal 31 (@($smallVaultWorkerLimits | Where-Object { $_ -eq 0 }).Count)
+
+      $limitConfig | Add-Member -NotePropertyName bulkApproval -NotePropertyValue ([pscustomobject]@{
+        consumed = $false
+        expiresUtc = [DateTimeOffset]::UtcNow.AddHours(1).ToString('o')
+        maxChangeFiles = 100
+        maxChangeBytes = 1048576
+      })
+      $bulkLimits = Get-AiBrainEffectiveChangeLimits `
+        -Config $limitConfig `
+        -Operation compile `
+        -ExistingWikiCount 2
+      Assert-Equal 100 ([int]$bulkLimits.FileLimit)
+      Assert-True ([bool]$bulkLimits.BulkApprovalActive)
+      $lintLimits = Get-AiBrainEffectiveChangeLimits `
+        -Config $limitConfig `
+        -Operation lint `
+        -ExistingWikiCount 2
+      Assert-Equal 5 ([int]$lintLimits.FileLimit)
+      Assert-False ([bool]$lintLimits.BulkApprovalActive)
+
+      $limits = @(
+        0..33 | ForEach-Object {
+          Get-AiBrainWorkerChangeLimit `
+            -TotalWorkers 34 `
+            -Ordinal $_ `
+            -MaxChangeFiles 100
+        }
+      )
+      Assert-Equal 98 ([int](($limits | Measure-Object -Sum).Sum))
+      Assert-Equal 30 (@($limits | Where-Object { $_ -eq 3 }).Count)
+      Assert-Equal 4 (@($limits | Where-Object { $_ -eq 2 }).Count)
+
+      $ranked = New-ChangeSet -Changes @(
+        (New-WriteChange -Path 'wiki/priority-1.md' -Content $script:TopicContent),
+        (New-WriteChange -Path 'wiki/priority-2.md' -Content $script:TopicContent),
+        (New-WriteChange -Path 'wiki/priority-3.md' -Content $script:TopicContent)
+      )
+      $limited = Test-AiBrainChunkChangeSet `
+        -ChangeSet $ranked `
+        -Operation compile `
+        -Scope all `
+        -ProtectedWikiPaths @{} `
+        -MaxChanges 2
+      Assert-Equal 2 (@($limited.changes).Count)
+      Assert-Equal 'wiki/priority-1.md' ([string]$limited.changes[0].path)
+      Assert-Equal 'wiki/priority-2.md' ([string]$limited.changes[1].path)
+
+      $unsafeDiscarded = New-ChangeSet -Changes @(
+        (New-WriteChange -Path 'wiki/priority-1.md' -Content $script:TopicContent),
+        (New-WriteChange -Path 'wiki/priority-2.md' -Content $script:TopicContent),
+        (New-WriteChange `
+          -Path 'wiki/priority-3.md' `
+          -Content ($script:TopicContent + "api_key=abcdefghijklmnopqrstuv`n"))
+      )
+      Assert-Throws -Code 'CHANGE_SET_SECRET_DETECTED' -Action {
+        Test-AiBrainChunkChangeSet `
+          -ChangeSet $unsafeDiscarded `
+          -Operation compile `
+          -Scope all `
+          -ProtectedWikiPaths @{} `
+          -MaxChanges 2 | Out-Null
+      }
+    }
+
+    Test-Case -Name 'worker aggregate removes unresolved wiki links and ignores pre-existing link debt' -Action {
+      $linkedContent = $script:TopicContent.Replace(
+        '# Topic',
+        '# Topic' + "`n" +
+          'Keep [[concepts/topic]], label [[missing-page|Readable]], and [[other-missing]].')
+      $sourceInventory = [pscustomobject]@{
+        files = @(
+          [pscustomobject]@{ path = 'wiki/concepts/topic.md' }
+        )
+        protectedWikiPaths = @()
+      }
+      $repaired = Repair-AiBrainChangeSetWikiLinks `
+        -ChangeSet (New-ChangeSet -Changes @(
+          (New-WriteChange -Path 'wiki/new-page.md' -Content $linkedContent)
+        )) `
+        -SourceInventory $sourceInventory
+      $repairedContent = [string]$repaired.changes[0].content
+      Assert-Match -Value $repairedContent -Pattern '\[\[concepts/topic\]\]'
+      Assert-False ($repairedContent.Contains('[[missing-page|Readable]]'))
+      Assert-False ($repairedContent.Contains('[[other-missing]]'))
+      Assert-True ($repairedContent.Contains('Readable'))
+      Assert-True ($repairedContent.Contains('other-missing'))
+      $known = @{
+        'wiki/concepts/topic.md' = $true
+        'topic' = $true
+        'wiki/new-page.md' = $true
+        'new-page' = $true
+      }
+      Test-AiBrainMarkdownLinks `
+        -RelativePath 'wiki/new-page.md' `
+        -Content $repairedContent `
+        -KnownWikiPaths $known
+
+      $fixture = New-TransactionFixture -Name 'preexisting-link-debt'
+      $brokenExisting = $script:TopicContent.Replace('# Topic', "# Topic`n[[missing-existing]]")
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'wiki\broken-existing.md') `
+        -Text $brokenExisting
+      $run = New-AiBrainRunDirectory -Paths $fixture.Paths -RunId ([Guid]::NewGuid().ToString('N'))
+      New-AiBrainSourceBundle -Config $fixture.Config -RunDirectory $run | Out-Null
+      Test-AiBrainChangeSet `
+        -ChangeSet (New-ChangeSet -Changes @(
+          (New-WriteChange -Path 'wiki/new-page.md' -Content $script:TopicContent)
+        )) `
+        -Config $fixture.Config `
+        -Operation compile `
+        -Scope all `
+        -RunDirectory $run `
+        -ExistingWikiCount 3 | Out-Null
     }
 
     Test-Case -Name 'chunk validation blocks reserved and cross-chunk conflicting paths' -Action {
@@ -1852,6 +1994,12 @@ status: complete
       $fixture.Config.compileEnabled = $false
       $fixture.Config.lintEnabled = $false
       $fixture.Config.limits.maxSourceFiles = 1
+      Set-AiBrainProperty -Object $fixture.Config -Name bulkApproval -Value ([pscustomobject]@{
+        consumed = $false
+        expiresUtc = [DateTimeOffset]::UtcNow.AddHours(1).ToString('o')
+        maxChangeFiles = [int]$fixture.Config.limits.maxChangeFiles
+        maxChangeBytes = [long]$fixture.Config.limits.maxChangeBytes
+      })
       Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
       Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\conflict-a.md') -Text 'MOCK_CONFLICT'
       Write-AiBrainTextAtomic -Path (Join-Path $fixture.Vault 'main\conflict-b.md') -Text 'MOCK_CONFLICT'
