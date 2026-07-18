@@ -31,6 +31,7 @@ $libraryRoot = Join-Path $PSScriptRoot 'lib'
 . (Join-Path $libraryRoot 'AiBrain.Requests.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Tasks.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Transaction.ps1')
+. (Join-Path $libraryRoot 'AiBrain.Batch.ps1')
 
 function Resolve-AiBrainControlRuntime {
   param([string]$RequestedRuntime, [string]$RequestedVault)
@@ -285,16 +286,26 @@ function Start-AiBrainRequestWithHandshake {
 function Get-AiBrainBulkEstimate {
   param([Parameter(Mandatory = $true)][object]$Config)
   $manifest = Get-AiBrainVaultManifest -VaultPath ([string]$Config.vaultPath)
-  $estimated = @($manifest | Where-Object { $_.path -like 'main/*' -or $_.path -like 'raw/*' })
-  [long]$estimatedBytes = 0
-  foreach ($entry in $estimated) { $estimatedBytes += [long]$entry.size }
+  [long]$vaultBytes = 0
+  foreach ($entry in $manifest) { $vaultBytes += [long]$entry.size }
+  $inventory = New-AiBrainSourceBundle -Config $Config -Operation compile -NoStage
+  $plan = New-AiBrainChunkPlan `
+    -Config $Config `
+    -Operation compile `
+    -Scope all `
+    -SourceInventory $inventory
   return [pscustomobject]@{
-    estimatedSourceFiles = $estimated.Count
-    estimatedSourceBytes = $estimatedBytes
+    estimatedVaultFiles = $manifest.Count
+    estimatedVaultBytes = $vaultBytes
+    estimatedSourceFiles = [int]$inventory.includedCount
+    estimatedSourceBytes = [long]$inventory.includedBytes
+    excludedSourceFiles = [int]$inventory.excludedCount
+    plannedChunks = @($plan.Chunks).Count
+    promptBudgetBytes = [long]$plan.PromptBudgetBytes
     proposedMaxChangeFiles = 100
     proposedMaxChangeBytes = [Math]::Min(
       [long]1073741824,
-      [Math]::Max([long]$Config.limits.maxChangeBytes, $estimatedBytes * 2)
+      [Math]::Max([long]$Config.limits.maxChangeBytes, [long]$inventory.includedBytes * 2)
     )
   }
 }
@@ -435,6 +446,20 @@ switch ($Action) {
       lastHeartbeatUtc = $state.lastHeartbeatUtc
       lastResultCode = $state.lastResultCode
       lastChangeCount = $state.lastChangeCount
+      inputMetrics = [pscustomobject]@{
+        vaultFiles = [int](Get-AiBrainProperty $state 'lastVaultFileCount' 0)
+        vaultBytes = [long](Get-AiBrainProperty $state 'lastVaultBytes' 0)
+        aiInputFiles = [int](Get-AiBrainProperty $state 'lastAiInputFileCount' 0)
+        aiInputBytes = [long](Get-AiBrainProperty $state 'lastAiInputBytes' 0)
+        chunks = [int](Get-AiBrainProperty $state 'lastChunkCount' 0)
+        completedChunks = [int](Get-AiBrainProperty $state 'lastCompletedChunkCount' 0)
+      }
+      sourceSafety = [pscustomobject]@{
+        detectorVersion = $script:AiBrainSecretDetectorVersion
+        excludedFiles = [int](Get-AiBrainProperty $state 'lastExcludedSourceCount' 0)
+        deniedNameFiles = [int](Get-AiBrainProperty $state 'lastExcludedByNameCount' 0)
+        secretContentFiles = [int](Get-AiBrainProperty $state 'lastExcludedByContentCount' 0)
+      }
       lastRecoveryCode = $state.lastRecoveryCode
       lastCompileUtc = $state.lastCompileSuccessUtc
       lastLintUtc = $state.lastLintSuccessUtc
@@ -604,6 +629,11 @@ switch ($Action) {
       expiresUtc = [DateTime]::UtcNow.AddHours(24).ToString('o')
       estimatedSourceFiles = [int]$estimate.estimatedSourceFiles
       estimatedSourceBytes = [long]$estimate.estimatedSourceBytes
+      estimatedVaultFiles = [int]$estimate.estimatedVaultFiles
+      estimatedVaultBytes = [long]$estimate.estimatedVaultBytes
+      excludedSourceFiles = [int]$estimate.excludedSourceFiles
+      plannedChunks = [int]$estimate.plannedChunks
+      promptBudgetBytes = [long]$estimate.promptBudgetBytes
       maxChangeFiles = $approvedFiles
       maxChangeBytes = $approvedBytes
       consumed = $false
@@ -619,6 +649,11 @@ switch ($Action) {
       approved = $true
       estimatedSourceFiles = [int]$estimate.estimatedSourceFiles
       estimatedSourceBytes = [long]$estimate.estimatedSourceBytes
+      estimatedVaultFiles = [int]$estimate.estimatedVaultFiles
+      estimatedVaultBytes = [long]$estimate.estimatedVaultBytes
+      excludedSourceFiles = [int]$estimate.excludedSourceFiles
+      plannedChunks = [int]$estimate.plannedChunks
+      promptBudgetBytes = [long]$estimate.promptBudgetBytes
       maxChangeFiles = $approvedFiles
       maxChangeBytes = $approvedBytes
       expiresUtc = $config.bulkApproval.expiresUtc

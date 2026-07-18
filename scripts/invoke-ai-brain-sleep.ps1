@@ -15,6 +15,7 @@ $libraryRoot = Join-Path $PSScriptRoot 'lib'
 . (Join-Path $libraryRoot 'AiBrain.Schedule.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Process.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Transaction.ps1')
+. (Join-Path $libraryRoot 'AiBrain.Batch.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Requests.ps1')
 
 function Invoke-AiBrainPreflight {
@@ -44,20 +45,36 @@ function Invoke-AiBrainPreflight {
 
 function Complete-AiBrainRecoveredJournal {
   param(
+    [Parameter(Mandatory = $true)][object]$Config,
     [Parameter(Mandatory = $true)][object]$State,
     [Parameter(Mandatory = $true)][object]$Paths,
     [Parameter(Mandatory = $true)][object]$Recovery
   )
   $journal = $Recovery.journal
   $slotId = [string](Get-AiBrainProperty $journal 'slotId' '')
-  if ([string]$journal.operation -eq 'compile' -and -not [string]::IsNullOrWhiteSpace($slotId)) {
-    Complete-AiBrainOperationSlot -State $State -Operation compile -SlotId ([string]$journal.slotId)
-    $State.lastCompileInputFingerprint = [string]$journal.finalFingerprint
-  } elseif ([string]$journal.operation -eq 'lint' -and -not [string]::IsNullOrWhiteSpace($slotId)) {
-    Complete-AiBrainOperationSlot -State $State -Operation lint -SlotId ([string]$journal.slotId)
+  $scope = [string](Get-AiBrainProperty $journal 'scope' '')
+  if ([string]$journal.operation -eq 'compile') {
+    Complete-AiBrainOperationSuccess -State $State -Operation compile -SlotId $slotId
+    if ($scope -eq 'all') {
+      $State.lastCompileInputFingerprint = [string]$journal.finalFingerprint
+      $checkpoint = @((Get-AiBrainProperty $journal 'compileChunkFingerprints' @()))
+      if ($checkpoint.Count -gt 0) {
+        Set-AiBrainProperty -Object $State -Name 'lastCompileChunkFingerprints' -Value $checkpoint
+      }
+      Complete-AiBrainBulkApproval -Config $Config -Paths $Paths
+    }
+  } elseif ([string]$journal.operation -eq 'lint') {
+    Complete-AiBrainOperationSuccess -State $State -Operation lint -SlotId $slotId
   }
   Set-AiBrainState -Paths $Paths -State $State
   Complete-AiBrainJournal -JournalPath ([string]$Recovery.path)
+  $batchId = [string](Get-AiBrainProperty $journal 'batchId' '')
+  if ($batchId -match '^[a-f0-9]{32}$') {
+    $workspace = Join-Path $Paths.Staging ('batch-' + $batchId)
+    if (Test-Path -LiteralPath $workspace -PathType Container) {
+      Remove-AiBrainRuntimeItem -Paths $Paths -Path $workspace -Recurse
+    }
+  }
 }
 
 function Get-AiBrainOperationFailureKind {
@@ -139,8 +156,13 @@ function Write-AiBrainProcessTechnicalLogs {
   param(
     [Parameter(Mandatory = $true)][object]$Paths,
     [Parameter(Mandatory = $true)][string]$RunId,
-    [Parameter(Mandatory = $true)][object]$ProcessResult
+    [Parameter(Mandatory = $true)][object]$ProcessResult,
+    [string]$Label = ''
   )
+  if (-not [string]::IsNullOrWhiteSpace($Label) -and $Label -notmatch '^[a-z0-9-]{1,32}$') {
+    throw "PROCESS_LOG_LABEL_INVALID"
+  }
+  $suffix = $(if ([string]::IsNullOrWhiteSpace($Label)) { '' } else { '-' + $Label })
   foreach ($entry in @(
     [pscustomobject]@{ Name = 'stdout'; Capture = $ProcessResult.StdOut },
     [pscustomobject]@{ Name = 'stderr'; Capture = $ProcessResult.StdErr }
@@ -155,7 +177,7 @@ function Write-AiBrainProcessTechnicalLogs {
       'content=withheld-by-privacy-contract'
     )
     Write-AiBrainTextAtomic `
-      -Path (Join-Path $Paths.Logs ("process-{0}.{1}.log" -f $RunId, $entry.Name)) `
+      -Path (Join-Path $Paths.Logs ("process-{0}{1}.{2}.log" -f $RunId, $suffix, $entry.Name)) `
       -Text (($record -join "`n") + "`n")
   }
 }
@@ -176,6 +198,131 @@ function Complete-AiBrainBulkApproval {
   Set-AiBrainProperty -Object $approval -Name 'consumed' -Value $true
   Set-AiBrainProperty -Object $approval -Name 'consumedUtc' -Value ([DateTime]::UtcNow.ToString('o'))
   Write-AiBrainJsonAtomic -Path $Paths.Config -Value $Config
+}
+
+function Complete-AiBrainOperationSuccess {
+  param(
+    [Parameter(Mandatory = $true)][object]$State,
+    [Parameter(Mandatory = $true)][ValidateSet('compile', 'lint')][string]$Operation,
+    [string]$SlotId
+  )
+  if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
+    Complete-AiBrainOperationSlot -State $State -Operation $Operation -SlotId $SlotId
+    return
+  }
+  if ($Operation -eq 'compile') {
+    $State.lastCompileSuccessUtc = [DateTime]::UtcNow.ToString('o')
+  } else {
+    $State.lastLintSuccessUtc = [DateTime]::UtcNow.ToString('o')
+  }
+}
+
+function Set-AiBrainSourceMetrics {
+  param(
+    [Parameter(Mandatory = $true)][object]$State,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$BaselineManifest,
+    [Parameter(Mandatory = $true)][object]$SourceInventory,
+    [int]$ChunkCount,
+    [int]$CompletedChunkCount
+  )
+  [long]$vaultBytes = 0
+  foreach ($entry in $BaselineManifest) { $vaultBytes += [long]$entry.size }
+  Set-AiBrainProperty -Object $State -Name 'lastVaultFileCount' -Value $BaselineManifest.Count
+  Set-AiBrainProperty -Object $State -Name 'lastVaultBytes' -Value $vaultBytes
+  Set-AiBrainProperty -Object $State -Name 'lastAiInputFileCount' -Value ([int]$SourceInventory.includedCount)
+  Set-AiBrainProperty -Object $State -Name 'lastAiInputBytes' -Value ([long]$SourceInventory.includedBytes)
+  Set-AiBrainProperty -Object $State -Name 'lastExcludedSourceCount' -Value ([int]$SourceInventory.excludedCount)
+  Set-AiBrainProperty -Object $State -Name 'lastExcludedByNameCount' -Value ([int]$SourceInventory.excludedByNameCount)
+  Set-AiBrainProperty -Object $State -Name 'lastExcludedByContentCount' -Value ([int]$SourceInventory.excludedByContentCount)
+  Set-AiBrainProperty -Object $State -Name 'lastChunkCount' -Value $ChunkCount
+  Set-AiBrainProperty -Object $State -Name 'lastCompletedChunkCount' -Value $CompletedChunkCount
+}
+
+function Invoke-AiBrainAgentPrompt {
+  param(
+    [Parameter(Mandatory = $true)][object]$Config,
+    [Parameter(Mandatory = $true)][object]$Paths,
+    [Parameter(Mandatory = $true)][object]$State,
+    [Parameter(Mandatory = $true)][ValidateSet('compile', 'lint')][string]$Operation,
+    [Parameter(Mandatory = $true)][string]$Prompt,
+    [Parameter(Mandatory = $true)][string]$AgentDirectory,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$LogLabel,
+    [int]$Ordinal
+  )
+  if ((Get-AiBrainPromptByteCount -Prompt $Prompt) -gt (Get-AiBrainPromptLimitBytes -Config $Config)) {
+    throw "PROMPT_INPUT_BUDGET_EXCEEDED"
+  }
+  if ($null -ne (Test-AiBrainContainsSecret -Text $Prompt)) { throw "PROMPT_SECRET_DETECTED" }
+  New-AiBrainDirectorySafe -Path $AgentDirectory | Out-Null
+  $invocation = New-AiBrainAgentInvocation `
+    -Config $Config `
+    -RunDirectory $AgentDirectory `
+    -Operation $Operation
+  $State.child = [ordered]@{ status = 'starting'; operation = $Operation; ordinal = $Ordinal }
+  Set-AiBrainState -Paths $Paths -State $State
+  $result = Invoke-AiBrainHiddenProcess `
+    -CommandPath $invocation.CommandPath `
+    -Arguments $invocation.Arguments `
+    -StandardInput $Prompt `
+    -WorkingDirectory $AgentDirectory `
+    -TimeoutSeconds ([int]$Config.limits.timeoutSeconds) `
+    -MaxCaptureBytes ([int]$Config.limits.maxCaptureBytes)
+  Write-AiBrainProcessTechnicalLogs `
+    -Paths $Paths `
+    -RunId $RunId `
+    -ProcessResult $result `
+    -Label $LogLabel
+  Write-AiBrainLogEvent -Paths $Paths -EventCode 'AGENT_PROCESS_COMPLETE' -SafeData @{
+    ordinal = $Ordinal
+    exitCode = $result.ExitCode
+    timedOut = [bool]$result.TimedOut
+    drained = [bool]$result.Drained
+    treeTerminated = [bool]$result.TreeTerminated
+    stdoutBytes = [long]$result.StdOut.Bytes
+    stderrBytes = [long]$result.StdErr.Bytes
+    stdoutTruncated = [bool]$result.StdOut.Truncated
+    stderrTruncated = [bool]$result.StdErr.Truncated
+  }
+  $State.child = [ordered]@{
+    status = 'finished'
+    operation = $Operation
+    ordinal = $Ordinal
+    processId = [int]$result.ProcessId
+    startTimeUtc = $result.StartTimeUtc.ToString('o')
+    executableHash = Get-AiBrainFileSha256 -Path ([string]$Config.agentExecutable)
+  }
+  Set-AiBrainState -Paths $Paths -State $State
+  return Get-AiBrainAgentFinalText `
+    -Target ([string]$Config.target) `
+    -ProcessResult $result `
+    -FinalPath $invocation.FinalPath
+}
+
+function Read-AiBrainBatchChangeSet {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$ExpectedHash,
+    [Parameter(Mandatory = $true)][ValidateSet('compile', 'lint')][string]$Operation,
+    [Parameter(Mandatory = $true)][string]$Scope,
+    [Parameter(Mandatory = $true)][hashtable]$ProtectedWikiPaths,
+    [switch]$Worker,
+    [string[]]$AllowedPaths = @()
+  )
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or
+      (Get-AiBrainFileSha256 -Path $Path) -ne $ExpectedHash) {
+    throw "BATCH_RESULT_INVALID"
+  }
+  $changeSet = ConvertFrom-AiBrainChangeSet `
+    -Text (Read-AiBrainUtf8 -Path $Path) `
+    -ExpectedOperation $Operation
+  return Test-AiBrainChunkChangeSet `
+    -ChangeSet $changeSet `
+    -Operation $Operation `
+    -Scope $Scope `
+    -ProtectedWikiPaths $ProtectedWikiPaths `
+    -Worker:$Worker `
+    -AllowedPaths $AllowedPaths
 }
 
 function Invoke-AiBrainOperation {
@@ -204,6 +351,7 @@ function Invoke-AiBrainOperation {
   $baseline = Get-AiBrainVaultManifest -VaultPath ([string]$Config.vaultPath)
   $inputFingerprint = Get-AiBrainManifestFingerprint -Manifest $baseline
   if ($Operation -eq 'compile' -and $Scheduled -and
+      [string]$State.packageId -eq [string]$Config.packageId -and
       -not [string]::IsNullOrWhiteSpace([string]$State.lastCompileInputFingerprint) -and
       [string]$State.lastCompileInputFingerprint -eq $inputFingerprint) {
     Complete-AiBrainOperationSlot -State $State -Operation compile -SlotId $SlotId
@@ -220,69 +368,326 @@ function Invoke-AiBrainOperation {
     return 'no_change'
   }
 
-  if ($Operation -eq 'compile' -and
-      [string]::IsNullOrWhiteSpace([string]$State.lastCompileSuccessUtc) -and
-      -not (Test-AiBrainBulkApprovalActive -Config $Config)) {
-    $estimatedFiles = @($baseline | Where-Object { $_.path -like 'main/*' -or $_.path -like 'raw/*' }).Count
-    if ($estimatedFiles -gt [int]$Config.limits.maxChangeFiles) {
-      throw "INITIAL_BULK_APPROVAL_REQUIRED"
-    }
-  }
-
   [long]$sourceBytes = 0
   foreach ($entry in $baseline) { $sourceBytes += [long]$entry.size }
   Assert-AiBrainFreeSpace -Config $Config -Paths $Paths -SourceBytes $sourceBytes | Out-Null
-  $runDirectory = New-AiBrainRunDirectory -Paths $Paths -RunId $runId
-  $bundle = New-AiBrainSourceBundle -Config $Config -RunDirectory $runDirectory
-  $prompt = New-AiBrainAgentPrompt -Operation $Operation -Scope $Scope -SourceBundle $bundle
-  $invocation = New-AiBrainAgentInvocation -Config $Config -RunDirectory $runDirectory -Operation $Operation
-  $State.child = [ordered]@{ status = 'starting'; operation = $Operation }
-  Set-AiBrainState -Paths $Paths -State $State
-
-  $result = Invoke-AiBrainHiddenProcess `
-    -CommandPath $invocation.CommandPath `
-    -Arguments $invocation.Arguments `
-    -StandardInput $prompt `
-    -WorkingDirectory $runDirectory `
-    -TimeoutSeconds ([int]$Config.limits.timeoutSeconds) `
-    -MaxCaptureBytes ([int]$Config.limits.maxCaptureBytes)
-  Write-AiBrainProcessTechnicalLogs -Paths $Paths -RunId $runId -ProcessResult $result
-  Write-AiBrainLogEvent -Paths $Paths -EventCode 'AGENT_PROCESS_COMPLETE' -SafeData @{
-    exitCode = $result.ExitCode
-    timedOut = [bool]$result.TimedOut
-    drained = [bool]$result.Drained
-    treeTerminated = [bool]$result.TreeTerminated
-    stdoutBytes = [long]$result.StdOut.Bytes
-    stderrBytes = [long]$result.StdErr.Bytes
-    stdoutTruncated = [bool]$result.StdOut.Truncated
-    stderrTruncated = [bool]$result.StdErr.Truncated
+  $promptBudget = Get-AiBrainPromptLimitBytes -Config $Config
+  $batchId = Get-AiBrainBatchId `
+    -Operation $Operation `
+    -Scope $Scope `
+    -BaselineFingerprint $inputFingerprint `
+    -PromptBudgetBytes $promptBudget `
+    -PackageId ([string]$Config.packageId)
+  $workspace = Initialize-AiBrainBatchWorkspace -Paths $Paths -BatchId $batchId
+  $bundle = New-AiBrainSourceBundle `
+    -Config $Config `
+    -RunDirectory $workspace.Snapshot `
+    -Operation $Operation
+  Write-AiBrainLogEvent -Paths $Paths -EventCode 'SOURCE_SCAN_COMPLETE' -SafeData @{
+    includedCount = [int]$bundle.includedCount
+    includedBytes = [long]$bundle.includedBytes
+    excludedCount = [int]$bundle.excludedCount
+    detectorVersion = [string]$bundle.detectorVersion
+  }
+  $protectedWikiPaths = Get-AiBrainProtectedWikiPathSet -SourceInventory $bundle
+  if (Test-AiBrainProtectedPageScope `
+      -Operation $Operation `
+      -Scope $Scope `
+      -ProtectedWikiPaths $protectedWikiPaths) {
+    Set-AiBrainSourceMetrics `
+      -State $State `
+      -BaselineManifest $baseline `
+      -SourceInventory $bundle `
+      -ChunkCount 0 `
+      -CompletedChunkCount 0
+    $State.status = 'ready'
+    $State.runId = $null
+    $State.activeRequestId = $null
+    $State.child = $null
+    Set-AiBrainLastResult `
+      -State $State `
+      -Code 'clean' `
+      -Operation $Operation `
+      -SkipReason 'all_sources_excluded'
+    Reset-AiBrainFailure -State $State
+    Set-AiBrainState -Paths $Paths -State $State
+    if ($null -ne $Claim) {
+      Complete-AiBrainRequest -Paths $Paths -Claim $Claim -ResultCode 'clean'
+    }
+    Write-AiBrainLogEvent -Paths $Paths -EventCode 'COMPILE_SCOPE_EXCLUDED' -SafeData @{
+      excludedCount = [int]$bundle.excludedCount
+    }
+    Remove-AiBrainRuntimeItem -Paths $Paths -Path $workspace.Root -Recurse
+    return 'clean'
+  }
+  if ($Operation -eq 'compile' -and
+      [string]::IsNullOrWhiteSpace([string]$State.lastCompileSuccessUtc) -and
+      -not (Test-AiBrainBulkApprovalActive -Config $Config) -and
+      [int]$bundle.includedCount -gt [int]$Config.limits.maxChangeFiles) {
+    Remove-AiBrainRuntimeItem -Paths $Paths -Path $workspace.Root -Recurse
+    throw "INITIAL_BULK_APPROVAL_REQUIRED"
   }
 
-  $State.child = [ordered]@{
-    status = 'finished'
-    processId = [int]$result.ProcessId
-    startTimeUtc = $result.StartTimeUtc.ToString('o')
-    executableHash = Get-AiBrainFileSha256 -Path ([string]$Config.agentExecutable)
-  }
+  $plan = New-AiBrainChunkPlan `
+    -Config $Config `
+    -Operation $Operation `
+    -Scope $Scope `
+    -SourceInventory $bundle
+  $activeChunks = @(Get-AiBrainChunksToProcess -Plan $plan -Operation $Operation -State $State)
+  $alreadyCurrent = @($plan.Chunks).Count - $activeChunks.Count
+  Set-AiBrainSourceMetrics `
+    -State $State `
+    -BaselineManifest $baseline `
+    -SourceInventory $bundle `
+    -ChunkCount (@($plan.Chunks).Count) `
+    -CompletedChunkCount $alreadyCurrent
   Set-AiBrainState -Paths $Paths -State $State
-  $finalText = Get-AiBrainAgentFinalText -Target ([string]$Config.target) -ProcessResult $result -FinalPath $invocation.FinalPath
-  $changeSet = ConvertFrom-AiBrainChangeSet -Text $finalText -ExpectedOperation $Operation
+
+  if (@($plan.Chunks).Count -eq 0 -or $activeChunks.Count -eq 0) {
+    Complete-AiBrainOperationSuccess -State $State -Operation $Operation -SlotId $SlotId
+    if ($Operation -eq 'compile' -and $Scope -eq 'all') {
+      $State.lastCompileInputFingerprint = $inputFingerprint
+      Set-AiBrainProperty `
+        -Object $State `
+        -Name 'lastCompileChunkFingerprints' `
+        -Value @(New-AiBrainCompileChunkCheckpoint -Plan $plan)
+      if ([int]$bundle.includedCount -gt 0) {
+        Complete-AiBrainBulkApproval -Config $Config -Paths $Paths
+      }
+    }
+    $State.status = 'ready'
+    $State.runId = $null
+    $State.activeRequestId = $null
+    $State.child = $null
+    Set-AiBrainProperty -Object $State -Name 'lastCompletedChunkCount' -Value (@($plan.Chunks).Count)
+    $skipReason = $(if ([int]$bundle.includedCount -eq 0 -and [int]$bundle.excludedCount -gt 0) {
+      'all_sources_excluded'
+    } else { $null })
+    Set-AiBrainLastResult -State $State -Code 'clean' -Operation $Operation -SkipReason $skipReason
+    Reset-AiBrainFailure -State $State
+    Set-AiBrainState -Paths $Paths -State $State
+    if ($null -ne $Claim) { Complete-AiBrainRequest -Paths $Paths -Claim $Claim -ResultCode 'clean' }
+    Write-AiBrainLogEvent -Paths $Paths -EventCode ($Operation.ToUpperInvariant() + '_CLEAN') -SafeData @{
+      chunks = @($plan.Chunks).Count
+      excludedCount = [int]$bundle.excludedCount
+    }
+    Remove-AiBrainRuntimeItem -Paths $Paths -Path $workspace.Root -Recurse
+    return 'clean'
+  }
+
+  $journal = Get-OrNewAiBrainBatchJournal `
+    -Workspace $workspace `
+    -BatchId $batchId `
+    -Operation $Operation `
+    -Scope $Scope `
+    -BaselineFingerprint $inputFingerprint `
+    -Plan $plan `
+    -ActiveChunks $activeChunks `
+    -RequestId $requestId
+  $workerChangeSets = New-Object System.Collections.ArrayList
+  for ($index = 0; $index -lt $activeChunks.Count; $index++) {
+    $chunk = $activeChunks[$index]
+    $journalEntry = @($journal.chunks)[$index]
+    $outputPath = Get-AiBrainBatchOutputPath -Workspace $workspace -Kind worker -Ordinal $index
+    $validated = $null
+    if ([string]$journalEntry.status -eq 'completed') {
+      $validated = Read-AiBrainBatchChangeSet `
+        -Path $outputPath `
+        -ExpectedHash ([string]$journalEntry.resultHash) `
+        -Operation $Operation `
+        -Scope $Scope `
+        -ProtectedWikiPaths $protectedWikiPaths `
+        -Worker
+    } elseif ([string]$journalEntry.status -eq 'running' -and
+        (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+      try {
+        $candidateHash = Get-AiBrainFileSha256 -Path $outputPath
+        $validated = Read-AiBrainBatchChangeSet `
+          -Path $outputPath `
+          -ExpectedHash $candidateHash `
+          -Operation $Operation `
+          -Scope $Scope `
+          -ProtectedWikiPaths $protectedWikiPaths `
+          -Worker
+        Set-AiBrainBatchChunkCompleted `
+          -Journal $journal `
+          -JournalPath $workspace.Journal `
+          -Ordinal $index `
+          -ResultHash $candidateHash `
+          -ChangeCount (@($validated.changes).Count) `
+          -ChangeBytes (Get-AiBrainChangeSetByteCount -ChangeSet $validated)
+      } catch {
+        $validated = $null
+        Remove-AiBrainRuntimeItem -Paths $Paths -Path $outputPath
+        $journalEntry.status = 'pending'
+        Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
+      }
+    }
+    if ($null -eq $validated) {
+      Set-AiBrainBatchChunkRunning -Journal $journal -JournalPath $workspace.Journal -Ordinal $index
+      $prompt = New-AiBrainAgentPrompt `
+        -Operation $Operation `
+        -Scope $Scope `
+        -SourceBundle ([ordered]@{ schemaVersion = 1; files = @($chunk.Files) }) `
+        -Mode worker `
+        -ChunkKey ([string]$chunk.Key)
+      $agentDirectory = Join-Path $workspace.Agents (
+        'worker-{0:D4}-{1}' -f $index, [Guid]::NewGuid().ToString('N'))
+      $finalText = Invoke-AiBrainAgentPrompt `
+        -Config $Config `
+        -Paths $Paths `
+        -State $State `
+        -Operation $Operation `
+        -Prompt $prompt `
+        -AgentDirectory $agentDirectory `
+        -RunId $runId `
+        -LogLabel ('worker-{0:D4}' -f $index) `
+        -Ordinal $index
+      $rawChangeSet = ConvertFrom-AiBrainChangeSet -Text $finalText -ExpectedOperation $Operation
+      $validated = Test-AiBrainChunkChangeSet `
+        -ChangeSet $rawChangeSet `
+        -Operation $Operation `
+        -Scope $Scope `
+        -ProtectedWikiPaths $protectedWikiPaths `
+        -Worker
+      Write-AiBrainTextAtomic -Path $outputPath -Text ($finalText.Trim() + "`n")
+      $resultHash = Get-AiBrainFileSha256 -Path $outputPath
+      Set-AiBrainBatchChunkCompleted `
+        -Journal $journal `
+        -JournalPath $workspace.Journal `
+        -Ordinal $index `
+        -ResultHash $resultHash `
+        -ChangeCount (@($validated.changes).Count) `
+        -ChangeBytes (Get-AiBrainChangeSetByteCount -ChangeSet $validated)
+    }
+    [void]$workerChangeSets.Add($validated)
+    Set-AiBrainProperty `
+      -Object $State `
+      -Name 'lastCompletedChunkCount' `
+      -Value ($alreadyCurrent + [int]$journal.completedChunks)
+    Set-AiBrainState -Paths $Paths -State $State
+  }
+
+  $workerChangeSet = Merge-AiBrainChunkChangeSets `
+    -Operation $Operation `
+    -ChangeSets @($workerChangeSets)
+  $allChangeSets = New-Object System.Collections.ArrayList
+  [void]$allChangeSets.Add($workerChangeSet)
+  $finalizerInput = Get-AiBrainFinalizerInput `
+    -SourceInventory $bundle `
+    -WorkerChangeSet $workerChangeSet
+  if (@($workerChangeSet.changes).Count -gt 0 -and @($finalizerInput.AllowedPaths).Count -gt 0) {
+    $finalizerOutput = Get-AiBrainBatchOutputPath -Workspace $workspace -Kind finalizer
+    $finalizerChangeSet = $null
+    if ([string]$journal.finalizer.status -eq 'completed') {
+      $finalizerChangeSet = Read-AiBrainBatchChangeSet `
+        -Path $finalizerOutput `
+        -ExpectedHash ([string]$journal.finalizer.resultHash) `
+        -Operation $Operation `
+        -Scope $Scope `
+        -ProtectedWikiPaths $protectedWikiPaths `
+        -AllowedPaths @($finalizerInput.AllowedPaths)
+    } elseif ([string]$journal.finalizer.status -eq 'running' -and
+        (Test-Path -LiteralPath $finalizerOutput -PathType Leaf)) {
+      try {
+        $candidateHash = Get-AiBrainFileSha256 -Path $finalizerOutput
+        $finalizerChangeSet = Read-AiBrainBatchChangeSet `
+          -Path $finalizerOutput `
+          -ExpectedHash $candidateHash `
+          -Operation $Operation `
+          -Scope $Scope `
+          -ProtectedWikiPaths $protectedWikiPaths `
+          -AllowedPaths @($finalizerInput.AllowedPaths)
+        Set-AiBrainBatchFinalizerCompleted `
+          -Journal $journal `
+          -JournalPath $workspace.Journal `
+          -ResultHash $candidateHash `
+          -ChangeCount (@($finalizerChangeSet.changes).Count) `
+          -ChangeBytes (Get-AiBrainChangeSetByteCount -ChangeSet $finalizerChangeSet)
+      } catch {
+        $finalizerChangeSet = $null
+        Remove-AiBrainRuntimeItem -Paths $Paths -Path $finalizerOutput
+        $journal.finalizer.status = 'pending'
+        Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
+      }
+    }
+    if ($null -eq $finalizerChangeSet) {
+      Set-AiBrainBatchFinalizerRunning -Journal $journal -JournalPath $workspace.Journal
+      $finalizerPrompt = New-AiBrainAgentPrompt `
+        -Operation $Operation `
+        -Scope $Scope `
+        -SourceBundle $finalizerInput.SourceBundle `
+        -Mode finalizer `
+        -ChunkKey finalizer `
+        -AllowedPaths @($finalizerInput.AllowedPaths) `
+        -ChangeSummary @($finalizerInput.ChangeSummary)
+      if ((Get-AiBrainPromptByteCount -Prompt $finalizerPrompt) -gt [long]$plan.PromptBudgetBytes) {
+        throw "FINALIZER_PROMPT_LIMIT_EXCEEDED"
+      }
+      $finalizerAgentDirectory = Join-Path $workspace.Agents (
+        'finalizer-' + [Guid]::NewGuid().ToString('N'))
+      $finalizerText = Invoke-AiBrainAgentPrompt `
+        -Config $Config `
+        -Paths $Paths `
+        -State $State `
+        -Operation $Operation `
+        -Prompt $finalizerPrompt `
+        -AgentDirectory $finalizerAgentDirectory `
+        -RunId $runId `
+        -LogLabel finalizer `
+        -Ordinal $activeChunks.Count
+      $rawFinalizer = ConvertFrom-AiBrainChangeSet `
+        -Text $finalizerText `
+        -ExpectedOperation $Operation
+      $finalizerChangeSet = Test-AiBrainChunkChangeSet `
+        -ChangeSet $rawFinalizer `
+        -Operation $Operation `
+        -Scope $Scope `
+        -ProtectedWikiPaths $protectedWikiPaths `
+        -AllowedPaths @($finalizerInput.AllowedPaths)
+      Write-AiBrainTextAtomic -Path $finalizerOutput -Text ($finalizerText.Trim() + "`n")
+      $finalizerHash = Get-AiBrainFileSha256 -Path $finalizerOutput
+      Set-AiBrainBatchFinalizerCompleted `
+        -Journal $journal `
+        -JournalPath $workspace.Journal `
+        -ResultHash $finalizerHash `
+        -ChangeCount (@($finalizerChangeSet.changes).Count) `
+        -ChangeBytes (Get-AiBrainChangeSetByteCount -ChangeSet $finalizerChangeSet)
+    }
+    [void]$allChangeSets.Add($finalizerChangeSet)
+  } else {
+    $journal.finalizer.status = 'skipped'
+    Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
+  }
+
+  $changeSet = Merge-AiBrainChunkChangeSets `
+    -Operation $Operation `
+    -ChangeSets @($allChangeSets)
+  Initialize-AiBrainAggregateStaging `
+    -Paths $Paths `
+    -Workspace $workspace `
+    -SourceInventory $bundle
   $existingWikiCount = @($baseline | Where-Object { $_.path -like 'wiki/*' }).Count
   Test-AiBrainChangeSet `
     -ChangeSet $changeSet `
     -Config $Config `
     -Operation $Operation `
     -Scope $Scope `
-    -RunDirectory $runDirectory `
-    -ExistingWikiCount $existingWikiCount | Out-Null
+    -RunDirectory $workspace.Staged `
+    -ExistingWikiCount $existingWikiCount `
+    -ProtectedWikiPaths @($bundle.protectedWikiPaths) | Out-Null
   $changeSummary = Get-AiBrainChangeSummary -Config $Config -ChangeSet $changeSet -BaselineManifest $baseline
 
   if (@($changeSet.changes).Count -eq 0) {
-    if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
-      Complete-AiBrainOperationSlot -State $State -Operation $Operation -SlotId $SlotId
+    Complete-AiBrainOperationSuccess -State $State -Operation $Operation -SlotId $SlotId
+    if ($Operation -eq 'compile' -and $Scope -eq 'all') {
+      $State.lastCompileInputFingerprint = $inputFingerprint
+      Set-AiBrainProperty `
+        -Object $State `
+        -Name 'lastCompileChunkFingerprints' `
+        -Value @(New-AiBrainCompileChunkCheckpoint -Plan $plan)
+      Complete-AiBrainBulkApproval -Config $Config -Paths $Paths
     }
-    if ($Operation -eq 'compile') { $State.lastCompileInputFingerprint = $inputFingerprint }
-    if ($Operation -eq 'compile') { Complete-AiBrainBulkApproval -Config $Config -Paths $Paths }
     $State.status = 'ready'
     $State.runId = $null
     $State.activeRequestId = $null
@@ -290,31 +695,54 @@ function Invoke-AiBrainOperation {
     Set-AiBrainLastResult -State $State -Code 'clean' -Operation $Operation
     Reset-AiBrainFailure -State $State
     Set-AiBrainState -Paths $Paths -State $State
+    $journal.status = 'finalized'
+    Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
     if ($null -ne $Claim) { Complete-AiBrainRequest -Paths $Paths -Claim $Claim -ResultCode 'clean' }
-    Write-AiBrainLogEvent -Paths $Paths -EventCode ($Operation.ToUpperInvariant() + '_CLEAN')
-    Remove-AiBrainRuntimeItem -Paths $Paths -Path $runDirectory -Recurse
+    Write-AiBrainLogEvent -Paths $Paths -EventCode ($Operation.ToUpperInvariant() + '_CLEAN') -SafeData @{
+      chunks = @($plan.Chunks).Count
+      excludedCount = [int]$bundle.excludedCount
+    }
+    Remove-AiBrainRuntimeItem -Paths $Paths -Path $workspace.Root -Recurse
     return 'clean'
   }
 
-  Materialize-AiBrainChangeSet -ChangeSet $changeSet -RunDirectory $runDirectory
+  Materialize-AiBrainChangeSet -ChangeSet $changeSet -RunDirectory $workspace.Staged
+  $compileChunkFingerprints = @()
+  if ($Operation -eq 'compile' -and $Scope -eq 'all') {
+    $projectedInventory = Get-AiBrainProjectedSourceInventory `
+      -SourceInventory $bundle `
+      -ChangeSet $changeSet
+    $projectedPlan = New-AiBrainChunkPlan `
+      -Config $Config `
+      -Operation compile `
+      -Scope $Scope `
+      -SourceInventory $projectedInventory
+    $compileChunkFingerprints = @(New-AiBrainCompileChunkCheckpoint -Plan $projectedPlan)
+  }
+  $journal.status = 'ready_to_apply'
+  Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
   if ($null -ne $Claim) { Set-AiBrainRequestJournal -Claim $Claim -JournalId $runId }
   $transaction = Invoke-AiBrainWikiTransaction `
     -Config $Config `
     -Paths $Paths `
     -ChangeSet $changeSet `
-    -RunDirectory $runDirectory `
+    -RunDirectory $workspace.Staged `
     -BaselineManifest $baseline `
     -RunId $runId `
     -Operation $Operation `
     -Scope $Scope `
     -SlotId $SlotId `
-    -RequestId $requestId
+    -RequestId $requestId `
+    -BatchId $batchId `
+    -CompileChunkFingerprints $compileChunkFingerprints
 
-  if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
-    Complete-AiBrainOperationSlot -State $State -Operation $Operation -SlotId $SlotId
-  }
-  if ($Operation -eq 'compile') {
+  Complete-AiBrainOperationSuccess -State $State -Operation $Operation -SlotId $SlotId
+  if ($Operation -eq 'compile' -and $Scope -eq 'all') {
     $State.lastCompileInputFingerprint = [string]$transaction.Journal.finalFingerprint
+    Set-AiBrainProperty `
+      -Object $State `
+      -Name 'lastCompileChunkFingerprints' `
+      -Value $compileChunkFingerprints
     Complete-AiBrainBulkApproval -Config $Config -Paths $Paths
   }
   $State.status = 'ready'
@@ -331,10 +759,19 @@ function Invoke-AiBrainOperation {
     -MetadataFixCount ([int]$changeSummary.MetadataFixCount)
   Reset-AiBrainFailure -State $State
   Set-AiBrainState -Paths $Paths -State $State
+  $journal.transactionJournalId = $runId
+  $journal.status = 'committed'
+  Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
   Complete-AiBrainJournal -JournalPath $transaction.JournalPath
+  $journal.status = 'finalized'
+  Write-AiBrainBatchJournal -Path $workspace.Journal -Journal $journal
   if ($null -ne $Claim) { Complete-AiBrainRequest -Paths $Paths -Claim $Claim -ResultCode 'applied' }
-  Write-AiBrainLogEvent -Paths $Paths -EventCode ($Operation.ToUpperInvariant() + '_APPLIED') -SafeData @{ changeCount = @($changeSet.changes).Count }
-  Remove-AiBrainRuntimeItem -Paths $Paths -Path $runDirectory -Recurse
+  Write-AiBrainLogEvent -Paths $Paths -EventCode ($Operation.ToUpperInvariant() + '_APPLIED') -SafeData @{
+    changeCount = @($changeSet.changes).Count
+    chunks = @($plan.Chunks).Count
+    excludedCount = [int]$bundle.excludedCount
+  }
+  Remove-AiBrainRuntimeItem -Paths $Paths -Path $workspace.Root -Recurse
   return 'applied'
 }
 
@@ -368,7 +805,7 @@ try {
 
   foreach ($recovery in Recover-AiBrainJournals -Config $config -Paths $paths) {
     if ($recovery.action -eq 'finalize_state') {
-      Complete-AiBrainRecoveredJournal -State $state -Paths $paths -Recovery $recovery
+      Complete-AiBrainRecoveredJournal -Config $config -State $state -Paths $paths -Recovery $recovery
     } elseif ($recovery.action -eq 'rolled_back') {
       $state.lastRecoveryCode = 'JOURNAL_ROLLED_BACK'
       $state.lastRollbackPerformed = $true
@@ -379,6 +816,12 @@ try {
     }
   }
   Recover-AiBrainClaimedRequests -Paths $paths -State $state
+  if ([string]$state.packageId -ne [string]$config.packageId) {
+    Reset-AiBrainCompileCheckpoint -State $state
+    $state.packageId = [string]$config.packageId
+    $state.lastRecoveryCode = 'PACKAGE_CHECKPOINT_RESET'
+    Write-AiBrainLogEvent -Paths $paths -EventCode 'PACKAGE_CHECKPOINT_RESET'
+  }
   $state.runId = $null
   $state.child = $null
   Set-AiBrainState -Paths $paths -State $state

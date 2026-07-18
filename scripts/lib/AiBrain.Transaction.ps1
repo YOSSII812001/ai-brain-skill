@@ -35,13 +35,21 @@ function Read-AiBrainSourceUtf8 {
 function New-AiBrainSourceBundle {
   param(
     [Parameter(Mandatory = $true)][object]$Config,
-    [Parameter(Mandatory = $true)][string]$RunDirectory
+    [string]$RunDirectory,
+    [ValidateSet('compile', 'lint')][string]$Operation = 'compile',
+    [switch]$NoStage
   )
+  if (-not $NoStage -and [string]::IsNullOrWhiteSpace($RunDirectory)) {
+    throw "STAGING_DIRECTORY_REQUIRED"
+  }
   $vault = Get-AiBrainCanonicalPath -Path ([string]$Config.vaultPath) -MustExist
-  $limits = $Config.limits
   $files = New-Object System.Collections.ArrayList
+  $protectedWikiPaths = New-Object System.Collections.ArrayList
   [long]$totalBytes = 0
-  foreach ($layer in @('main', 'raw', 'wiki')) {
+  [int]$excludedByName = 0
+  [int]$excludedByContent = 0
+  $layers = $(if ($Operation -eq 'lint') { @('wiki') } else { @('main', 'raw', 'wiki') })
+  foreach ($layer in $layers) {
     $sourceLayer = Join-Path $vault $layer
     if (-not (Test-Path -LiteralPath $sourceLayer -PathType Container)) { continue }
     Assert-AiBrainNoReparsePath -Path $sourceLayer | Out-Null
@@ -49,20 +57,29 @@ function New-AiBrainSourceBundle {
       Assert-AiBrainNoReparsePath -Path $file.FullName | Out-Null
       $relative = $file.FullName.Substring($vault.Length).TrimStart('\').Replace('\', '/')
       if ($relative -ieq 'wiki/_meta/sleep-report.md' -or $relative -match '(?i)^wiki/_meta/(?:\.lock|sleep-)') { continue }
-      if (Test-AiBrainDeniedFileName -Name $file.Name) { throw "SOURCE_DENIED_FILE" }
+      if ((Test-AiBrainDeniedFileName -Name $file.Name) -or
+          $null -ne (Test-AiBrainContainsSecret -Text $relative)) {
+        $excludedByName++
+        if ($relative -like 'wiki/*') { [void]$protectedWikiPaths.Add($relative) }
+        continue
+      }
       if ($file.Extension.ToLowerInvariant() -notin $script:AiBrainTextExtensions) { continue }
       $content = Read-AiBrainSourceUtf8 -Path $file.FullName
-      if ($null -ne (Test-AiBrainContainsSecret -Text $content)) { throw "SOURCE_SECRET_DETECTED" }
+      if ($null -ne (Test-AiBrainContainsSecret -Text $content)) {
+        $excludedByContent++
+        if ($relative -like 'wiki/*') { [void]$protectedWikiPaths.Add($relative) }
+        continue
+      }
       $bytes = $script:AiBrainUtf8NoBom.GetByteCount($content)
       $totalBytes += $bytes
-      if (($files.Count + 1) -gt [int]$limits.maxSourceFiles -or $totalBytes -gt [long]$limits.maxSourceBytes) {
-        throw "SOURCE_BUNDLE_LIMIT_EXCEEDED"
+      if (-not $NoStage) {
+        $stagePath = Resolve-AiBrainChildPath -Root $RunDirectory -RelativePath $relative -AllowMissingLeaf
+        Write-AiBrainTextAtomic -Path $stagePath -Text $content
       }
-      $stagePath = Resolve-AiBrainChildPath -Root $RunDirectory -RelativePath $relative -AllowMissingLeaf
-      Write-AiBrainTextAtomic -Path $stagePath -Text $content
       [void]$files.Add([ordered]@{
         path = $relative
         sha256 = Get-AiBrainFileSha256 -Path $file.FullName
+        bytes = [long]$bytes
         content = $content
       })
     }
@@ -70,6 +87,13 @@ function New-AiBrainSourceBundle {
   return [ordered]@{
     schemaVersion = 1
     files = @($files)
+    includedCount = $files.Count
+    includedBytes = $totalBytes
+    excludedCount = $excludedByName + $excludedByContent
+    excludedByNameCount = $excludedByName
+    excludedByContentCount = $excludedByContent
+    detectorVersion = $script:AiBrainSecretDetectorVersion
+    protectedWikiPaths = @($protectedWikiPaths)
   }
 }
 
@@ -77,13 +101,42 @@ function New-AiBrainAgentPrompt {
   param(
     [Parameter(Mandatory = $true)][ValidateSet('compile', 'lint')][string]$Operation,
     [Parameter(Mandatory = $true)][string]$Scope,
-    [Parameter(Mandatory = $true)][object]$SourceBundle
+    [Parameter(Mandatory = $true)][object]$SourceBundle,
+    [ValidateSet('worker', 'finalizer')][string]$Mode = 'worker',
+    [string]$ChunkKey = 'root',
+    [string[]]$AllowedPaths = @(),
+    [object[]]$ChangeSummary = @()
   )
-  $instruction = Get-AiBrainMessage -Name $(if ($Operation -eq 'compile') { 'compile_instruction' } else { 'lint_instruction' })
+  $instruction = $(if ($Mode -eq 'finalizer') {
+    'Finalize the catalog after all worker chunks. Use the change summary to update only the allowed index or log paths.'
+  } else {
+    Get-AiBrainMessage -Name $(if ($Operation -eq 'compile') { 'compile_instruction' } else { 'lint_instruction' })
+  })
+  $promptFiles = New-Object System.Collections.ArrayList
+  foreach ($file in @($SourceBundle.files)) {
+    [void]$promptFiles.Add([ordered]@{
+      path = [string]$file.path
+      sha256 = [string]$file.sha256
+      content = [string]$file.content
+    })
+  }
+  $coordination = [ordered]@{
+    mode = $Mode
+    chunkKey = $ChunkKey
+  }
+  if ($Mode -eq 'worker') {
+    $coordination.reservedPaths = @('wiki/index.md', 'wiki/log.md')
+    $coordination.rule = 'Do not write or delete reserved paths. Only return changes directly justified by this input chunk.'
+  } else {
+    $coordination.allowedPaths = @($AllowedPaths)
+    $coordination.changeSummary = @($ChangeSummary)
+    $coordination.rule = 'Return changes only for allowedPaths. Do not recreate worker changes.'
+  }
   $envelope = [ordered]@{
     operation = $Operation
     scope = $Scope
     instruction = $instruction.Trim()
+    coordination = $coordination
     safety = @(
       (Get-AiBrainMessage -Name safety_bundle),
       (Get-AiBrainMessage -Name safety_tools),
@@ -103,9 +156,12 @@ function New-AiBrainAgentPrompt {
         }
       )
     }
-    input = $SourceBundle
+    input = [ordered]@{
+      schemaVersion = 1
+      files = @($promptFiles)
+    }
   }
-  return ($envelope | ConvertTo-Json -Depth 50)
+  return ($envelope | ConvertTo-Json -Depth 50 -Compress)
 }
 
 function ConvertFrom-AiBrainChangeSet {
@@ -310,7 +366,8 @@ function Test-AiBrainChangeSet {
     [Parameter(Mandatory = $true)][string]$Operation,
     [Parameter(Mandatory = $true)][string]$Scope,
     [Parameter(Mandatory = $true)][string]$RunDirectory,
-    [int]$ExistingWikiCount = 0
+    [int]$ExistingWikiCount = 0,
+    [string[]]$ProtectedWikiPaths = @()
   )
   $changes = @($ChangeSet.changes)
   $limits = $Config.limits
@@ -336,6 +393,12 @@ function Test-AiBrainChangeSet {
   $seen = @{}
   [long]$bytes = 0
   $known = Get-AiBrainWikiPathSet -RunDirectory $RunDirectory
+  foreach ($protectedPath in $ProtectedWikiPaths) {
+    $protectedKey = $protectedPath.Replace('\', '/').ToLowerInvariant()
+    if ($protectedKey -notmatch '^wiki/.+\.md$') { continue }
+    $known[$protectedKey] = $true
+    $known[[IO.Path]::GetFileNameWithoutExtension($protectedKey)] = $true
+  }
   foreach ($change in $changes) {
     $allowedFields = @('path', 'action', 'content')
     foreach ($property in $change.PSObject.Properties) {
@@ -544,6 +607,16 @@ function Invoke-AiBrainJournalRollback {
     Set-AiBrainProperty -Object $entry -Name 'rolledBack' -Value $true
     Write-AiBrainJournal -Path $JournalPath -Journal $journal
   }
+  $baselineFingerprint = [string](Get-AiBrainProperty $journal 'baselineFingerprint' '')
+  if (-not [string]::IsNullOrWhiteSpace($baselineFingerprint)) {
+    $restoredFingerprint = Get-AiBrainManifestFingerprint (
+      Get-AiBrainVaultManifest -VaultPath ([string]$Config.vaultPath))
+    if ($restoredFingerprint -ne $baselineFingerprint) {
+      $journal.status = 'conflict'
+      Write-AiBrainJournal -Path $JournalPath -Journal $journal
+      throw "ROLLBACK_VERIFY_FAILED"
+    }
+  }
   $journal.status = 'rolled_back'
   Write-AiBrainJournal -Path $JournalPath -Journal $journal
 }
@@ -559,8 +632,13 @@ function Invoke-AiBrainWikiTransaction {
     [Parameter(Mandatory = $true)][string]$Operation,
     [Parameter(Mandatory = $true)][string]$Scope,
     [string]$SlotId,
-    [string]$RequestId
+    [string]$RequestId,
+    [string]$BatchId,
+    [object[]]$CompileChunkFingerprints = @()
   )
+  if (-not [string]::IsNullOrWhiteSpace($BatchId) -and $BatchId -notmatch '^[a-f0-9]{32}$') {
+    throw "BATCH_ID_INVALID"
+  }
   Assert-AiBrainFreeSpace -Config $Config -Paths $Paths | Out-Null
   $currentManifest = Get-AiBrainVaultManifest -VaultPath ([string]$Config.vaultPath)
   if ((Get-AiBrainManifestFingerprint $currentManifest) -ne (Get-AiBrainManifestFingerprint $BaselineManifest)) {
@@ -605,8 +683,11 @@ function Invoke-AiBrainWikiTransaction {
     operation = $Operation
     scope = $Scope
     slotId = $SlotId
+    batchId = $BatchId
+    compileChunkFingerprints = @($CompileChunkFingerprints)
     status = 'prepared'
     createdUtc = [DateTime]::UtcNow.ToString('o')
+    baselineFingerprint = Get-AiBrainManifestFingerprint -Manifest $BaselineManifest
     expectedFinalFingerprint = Get-AiBrainExpectedManifestFingerprint -BaselineManifest $BaselineManifest -ChangeSet $ChangeSet -RunDirectory $RunDirectory
     entries = @($entries)
   }

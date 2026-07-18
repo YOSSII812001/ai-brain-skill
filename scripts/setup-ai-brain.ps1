@@ -31,6 +31,8 @@ $libraryRoot = Join-Path $PSScriptRoot 'lib'
 . (Join-Path $libraryRoot 'AiBrain.Schedule.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Process.ps1')
 . (Join-Path $libraryRoot 'AiBrain.Tasks.ps1')
+. (Join-Path $libraryRoot 'AiBrain.Transaction.ps1')
+. (Join-Path $libraryRoot 'AiBrain.Batch.ps1')
 
 function Resolve-AiBrainAgentExecutable {
   param([string]$RequestedPath, [string]$Kind)
@@ -88,14 +90,37 @@ function Get-AiBrainConsentChoice {
 function Get-AiBrainInitialBulkEstimate {
   param([Parameter(Mandatory = $true)][string]$CanonicalVault)
   $manifest = Get-AiBrainVaultManifest -VaultPath $CanonicalVault
-  $sources = @($manifest | Where-Object { $_.path -like 'main/*' -or $_.path -like 'raw/*' })
-  [long]$bytes = 0
-  foreach ($entry in $sources) { $bytes += [long]$entry.size }
+  [long]$vaultBytes = 0
+  foreach ($entry in $manifest) { $vaultBytes += [long]$entry.size }
+  $estimateConfig = [pscustomobject]@{
+    vaultPath = $CanonicalVault
+    limits = [pscustomobject]@{
+      maxSourceFiles = 1000
+      maxSourceBytes = 8388608
+      maxPromptBytes = $script:AiBrainDefaultPromptBytes
+    }
+  }
+  $inventory = New-AiBrainSourceBundle `
+    -Config $estimateConfig `
+    -Operation compile `
+    -NoStage
+  $plan = New-AiBrainChunkPlan `
+    -Config $estimateConfig `
+    -Operation compile `
+    -Scope all `
+    -SourceInventory $inventory
   return [pscustomobject]@{
-    SourceFiles = $sources.Count
-    SourceBytes = $bytes
+    VaultFiles = $manifest.Count
+    VaultBytes = $vaultBytes
+    SourceFiles = [int]$inventory.includedCount
+    SourceBytes = [long]$inventory.includedBytes
+    ExcludedFiles = [int]$inventory.excludedCount
+    PlannedChunks = @($plan.Chunks).Count
+    PromptBudgetBytes = [long]$plan.PromptBudgetBytes
     MaxChangeFiles = 100
-    MaxChangeBytes = [Math]::Min([long]1073741824, [Math]::Max([long]10485760, $bytes * 2))
+    MaxChangeBytes = [Math]::Min(
+      [long]1073741824,
+      [Math]::Max([long]10485760, [long]$inventory.includedBytes * 2))
   }
 }
 
@@ -107,8 +132,16 @@ function Get-AiBrainInitialBulkApproval {
     [bool]$ExplicitApproval,
     [bool]$IsApply
   )
-  if (-not $Enabled -or -not $NeedsApproval) { return $false }
-  Write-Host ((Get-AiBrainMessage -Name setup_bulk_estimate) -f $Estimate.SourceFiles, $Estimate.SourceBytes, $Estimate.MaxChangeFiles)
+  if (-not $Enabled) { return $false }
+  Write-Host ((Get-AiBrainMessage -Name setup_vault_estimate) -f $Estimate.VaultFiles, $Estimate.VaultBytes)
+  Write-Host ((Get-AiBrainMessage -Name setup_bulk_estimate) -f
+    $Estimate.SourceFiles,
+    $Estimate.SourceBytes,
+    $Estimate.ExcludedFiles,
+    $Estimate.PlannedChunks,
+    $Estimate.PromptBudgetBytes)
+  if (-not $NeedsApproval) { return $false }
+  Write-Host ((Get-AiBrainMessage -Name setup_bulk_question) -f $Estimate.MaxChangeFiles)
   if (-not $IsApply) {
     Write-Host 'DRY RUN. The skill must ask for one-time initial bulk approval before Apply.'
     return $false
@@ -416,8 +449,22 @@ if ($null -ne $existingConfig -and -not $ReconfigureSleep) {
 }
 
 $bulkEstimate = Get-AiBrainInitialBulkEstimate -CanonicalVault $canonicalVault
-$needsInitialBulk = [bool]$consent.Enabled -and $bulkEstimate.SourceFiles -gt 0 -and
-  ($null -eq $existingState -or [string]::IsNullOrWhiteSpace([string](Get-AiBrainProperty $existingState 'lastCompileSuccessUtc' '')))
+$existingBulkApproval = $(if ($null -ne $sourceConfig) {
+  Get-AiBrainProperty $sourceConfig 'bulkApproval' $null
+} else { $null })
+$existingBulkActive = $false
+if ($null -ne $existingBulkApproval -and
+    -not [bool](Get-AiBrainProperty $existingBulkApproval 'consumed' $true)) {
+  $existingBulkExpiry = [DateTimeOffset]::MinValue
+  $existingBulkActive = [DateTimeOffset]::TryParse(
+    [string](Get-AiBrainProperty $existingBulkApproval 'expiresUtc' ''),
+    [ref]$existingBulkExpiry) -and $existingBulkExpiry.UtcDateTime -gt [DateTime]::UtcNow
+}
+$needsInitialBulk = [bool]$consent.Enabled -and
+  $bulkEstimate.SourceFiles -gt $bulkEstimate.MaxChangeFiles -and
+  ($null -eq $existingState -or
+    [string]::IsNullOrWhiteSpace([string](Get-AiBrainProperty $existingState 'lastCompileSuccessUtc' ''))) -and
+  -not $existingBulkActive
 $initialBulkApproved = Get-AiBrainInitialBulkApproval `
   -Estimate $bulkEstimate `
   -Enabled ([bool]$consent.Enabled) `
@@ -556,11 +603,21 @@ try {
       expiresUtc = [DateTime]::UtcNow.AddHours(24).ToString('o')
       estimatedSourceFiles = [int]$bulkEstimate.SourceFiles
       estimatedSourceBytes = [long]$bulkEstimate.SourceBytes
+      estimatedVaultFiles = [int]$bulkEstimate.VaultFiles
+      estimatedVaultBytes = [long]$bulkEstimate.VaultBytes
+      excludedSourceFiles = [int]$bulkEstimate.ExcludedFiles
+      plannedChunks = [int]$bulkEstimate.PlannedChunks
+      promptBudgetBytes = [long]$bulkEstimate.PromptBudgetBytes
       maxChangeFiles = [int]$bulkEstimate.MaxChangeFiles
       maxChangeBytes = [long]$bulkEstimate.MaxChangeBytes
       consumed = $false
       consumedUtc = $null
     })
+  } elseif ($null -ne $sourceConfig -and $null -ne (Get-AiBrainProperty $sourceConfig 'bulkApproval' $null)) {
+    Set-AiBrainProperty `
+      -Object $config `
+      -Name 'bulkApproval' `
+      -Value (Get-AiBrainProperty $sourceConfig 'bulkApproval' $null)
   }
   $scratch = Join-Path $paths.Staging ('capability-' + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $scratch -ErrorAction Stop | Out-Null
@@ -574,10 +631,23 @@ try {
   $state = $existingState
   $newState = $null -eq $state
   if ($newState) { $state = New-AiBrainState -Enabled $consent.Enabled }
+  if (-not $newState -and [string]$state.packageId -ne [string]$package.PackageId) {
+    Reset-AiBrainCompileCheckpoint -State $state
+    $state.lastRecoveryCode = 'PACKAGE_CHECKPOINT_RESET'
+  }
   if ($rebindRequired) {
     Reset-AiBrainFailure -State $state
     $state.status = $(if ([bool]$consent.Enabled) { 'ready' } else { 'off' })
     $state.lastRecoveryCode = 'VAULT_REBOUND'
+  }
+  if ([string](Get-AiBrainProperty $state 'attentionCode' '') -in @(
+      'SOURCE_SECRET_DETECTED',
+      'SOURCE_DENIED_FILE'
+  )) {
+    Reset-AiBrainFailure -State $state
+    $state.status = $(if ([bool]$consent.Enabled) { 'ready' } else { 'off' })
+    Reset-AiBrainCompileCheckpoint -State $state
+    $state.lastRecoveryCode = 'SOURCE_EXCLUSION_UPGRADED'
   }
   $now = [DateTime]::UtcNow
   $compileSlot = Get-AiBrainCompileSlot -NowUtc $now -IntervalHours $consent.CompileHours

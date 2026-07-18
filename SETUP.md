@@ -32,7 +32,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1
   -SleepModeChoice Accept
 ```
 
-`-Apply`を付けなければドライランです。コピー先、実行対象、compileの間隔、lintの時刻、初回整理の見積りを表示します。ファイルやタスクは変更しません。`SleepModeChoice`を省略した場合は、skillによる同意が必要だと機械可読なエラーで返します。
+`-Apply`を付けなければドライランです。コピー先、実行対象、compileの間隔、lintの時刻、初回整理の見積りを表示します。ファイルやタスクは変更しません。
+
+見積りは次の3つを分けて表示します。
+
+- vault全体のファイル数と容量
+- 安全確認後にAIへ渡すテキストのファイル数と容量
+- 除外するファイル数、分割数、1回の入力上限
+
+`SleepModeChoice`を省略した場合は、skillによる同意が必要だと機械可読なエラーで返します。
 
 S4Uタスクの登録に管理者権限が必要なPCでは、`-Apply`時にWindowsの管理者確認が1回だけ表示されます。これは人が始める初回設定です。登録後の定期実行と「今すぐ整理」は通常権限で動き、管理者確認やターミナルを表示しません。
 
@@ -62,7 +70,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1
 -SleepModeChoice Disable
 ```
 
-ドライランが初回整理の対象を表示した場合、skillは件数と容量を利用者へ示します。利用者が同意した後だけ、適用時に`-ApproveInitialBulk`を追加します。
+ドライランが初回整理の対象を表示した場合、skillは上記の内訳を利用者へ示します。利用者が同意した後だけ、適用時に`-ApproveInitialBulk`を追加します。この承認で許可するのは、最大100件のwiki変更を1回だけです。
 
 `-Apply`は次を導入します。
 
@@ -83,6 +91,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1
 ## 導入後の確認
 
 利用者は`wiki/_meta/sleep-report.md`を見るだけで、最終結果と次回予定を確認できます。
+
+AI Brainは、秘密情報らしい内容や拒否対象名を持つファイルを丸ごと除外します。元ファイルは変更しません。睡眠レポートと状態表示には件数だけを残し、値、本文、対象pathは残しません。
+
+安全な入力が1回の上限を超える場合、AI Brainは同じ基準で分割します。途中で止まっても、完了済みの分割は次回にやり直しません。すべての分割を検証した後、wikiへの変更を1回だけ反映します。
 
 ```text
 /wiki-sleep status

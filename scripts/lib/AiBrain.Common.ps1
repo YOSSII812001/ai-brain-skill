@@ -3,6 +3,8 @@ Set-StrictMode -Version 2.0
 $script:AiBrainUtf8NoBom = New-Object System.Text.UTF8Encoding($false, $true)
 $script:AiBrainAllowedStatuses = @('off', 'ready', 'running', 'paused', 'attention')
 $script:AiBrainTextExtensions = @('.md', '.txt', '.json', '.csv', '.yml', '.yaml')
+$script:AiBrainSecretDetectorVersion = '2026-07-18-1'
+$script:AiBrainDefaultPromptBytes = 655360
 $script:AiBrainMessages = @{
   action_doctor = '"wiki-sleep doctor \u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044"'
   report_title_yaml = '"title: \"AI Brain \u7761\u7720\u30ec\u30dd\u30fc\u30c8\""'
@@ -21,6 +23,9 @@ $script:AiBrainMessages = @{
   report_links = '"- \u4fee\u6b63\u3057\u305f\u30ea\u30f3\u30af: {0}\u30d5\u30a1\u30a4\u30eb"'
   report_metadata = '"- \u4fee\u6b63\u3057\u305f\u7ba1\u7406\u60c5\u5831: {0}\u30d5\u30a1\u30a4\u30eb"'
   report_skip = '"- \u30b9\u30ad\u30c3\u30d7\u7406\u7531: {0}"'
+  report_input = '"- AI\u5165\u529b\u5bfe\u8c61: {0}\u30d5\u30a1\u30a4\u30eb\uff08{1}\u30d0\u30a4\u30c8\uff09"'
+  report_excluded = '"- \u5b89\u5168\u306e\u305f\u3081\u6574\u7406\u5bfe\u8c61\u304b\u3089\u5916\u3057\u305f\u30d5\u30a1\u30a4\u30eb: {0}\u4ef6"'
+  report_chunks = '"- \u5206\u5272\u51e6\u7406: {0}/{1}\u5b8c\u4e86"'
   result_none = '"\u307e\u3060\u7d50\u679c\u306f\u3042\u308a\u307e\u305b\u3093"'
   result_no_change = '"\u6574\u7406\u3059\u308b\u65b0\u3057\u3044\u5185\u5bb9\u306f\u3042\u308a\u307e\u305b\u3093"'
   result_clean = '"\u70b9\u691c\u6e08\u307f\u3067\u3059\u3002\u4fee\u6b63\u306f\u3042\u308a\u307e\u305b\u3093"'
@@ -37,6 +42,7 @@ $script:AiBrainMessages = @{
   status_attention = '"\u5229\u7528\u8005\u306e\u64cd\u4f5c\u304c1\u3064\u5fc5\u8981\u3067\u3059"'
   skip_none = '"\u306a\u3057"'
   skip_source_unchanged = '"\u65b0\u3057\u3044\u5185\u5bb9\u304c\u306a\u3044\u305f\u3081\u3001AI\u3092\u4f7f\u308f\u305a\u78ba\u8a8d\u3060\u3051\u884c\u3044\u307e\u3057\u305f"'
+  skip_sources_excluded = '"\u5b89\u5168\u306e\u305f\u3081\u5bfe\u8c61\u30d5\u30a1\u30a4\u30eb\u3092\u9664\u5916\u3057\u3001AI\u3092\u4f7f\u308f\u305a\u78ba\u8a8d\u3092\u5b8c\u4e86\u3057\u307e\u3057\u305f"'
   report_next_action = '"## \u6b21\u306b\u884c\u3046\u64cd\u4f5c"'
   setup_intro = '"AI Brain\u306e\u300c\u7761\u7720\u30e2\u30fc\u30c9\u300d\u3092\u8a2d\u5b9a\u3057\u307e\u3059\u3002"'
   setup_compile_what = '"compile\uff08\u30b3\u30f3\u30d1\u30a4\u30eb\uff09\u306f\u3001\u4eba\u304c\u7720\u3063\u3066\u3044\u308b\u9593\u306b\u65e5\u4e2d\u306e\u8a18\u61b6\u3092\u6574\u7406\u3059\u308b\u4f5c\u696d\u3067\u3059\u3002"'
@@ -65,7 +71,9 @@ $script:AiBrainMessages = @{
   action_config_reset = '"\u73fe\u5728\u306e\u8a2d\u5b9a\u3092\u4fdd\u5b58\u3057\u305f\u307e\u307e\u3001wiki-sleep reconfigure --approve-config-reset \u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044"'
   action_setup = '"wiki-sleep repair-installation \u30921\u56de\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044"'
   action_source_safety = '"AI\u306b\u300c\u79d8\u5bc6\u60c5\u5831\u3092\u542b\u3080\u30ce\u30fc\u30c8\u3092\u6574\u7406\u5bfe\u8c61\u304b\u3089\u5916\u3057\u3066\u3001\u81ea\u52d5\u6574\u7406\u3092\u518d\u958b\u3057\u3066\u300d\u3068\u4f9d\u983c\u3057\u3066\u304f\u3060\u3055\u3044"'
-  setup_bulk_estimate = '"\u521d\u56decompile\u306e\u5bfe\u8c61\u306f {0}\u30d5\u30a1\u30a4\u30eb\uff08{1}\u30d0\u30a4\u30c8\uff09\u3067\u3059\u3002\u6700\u5927{2}\u30d5\u30a1\u30a4\u30eb\u306ewiki\u5909\u66f4\u30921\u56de\u3060\u3051\u8a31\u53ef\u3057\u307e\u3059\u304b\uff1f"'
+  setup_vault_estimate = '"\u4fdd\u7ba1\u5eab\u5168\u4f53\u306f {0}\u30d5\u30a1\u30a4\u30eb\uff08{1}\u30d0\u30a4\u30c8\uff09\u3067\u3059\u3002"'
+  setup_bulk_estimate = '"AI\u5165\u529b\u306f\u5b89\u5168\u78ba\u8a8d\u5f8c {0}\u30d5\u30a1\u30a4\u30eb\uff08{1}\u30d0\u30a4\u30c8\uff09\u3001\u9664\u5916 {2}\u4ef6\u3001{3}\u5206\u5272\uff081\u56de\u6700\u5927{4}\u30d0\u30a4\u30c8\uff09\u306e\u4e88\u5b9a\u3067\u3059\u3002"'
+  setup_bulk_question = '"\u6700\u5927{0}\u30d5\u30a1\u30a4\u30eb\u306ewiki\u5909\u66f4\u30921\u56de\u3060\u3051\u8a31\u53ef\u3057\u307e\u3059\u304b\uff1f"'
   setup_bulk_choice = '"[Y] \u8a31\u53ef\u3059\u308b / [N] \u4eca\u306f\u8a31\u53ef\u3057\u306a\u3044"'
 }
 
@@ -414,6 +422,7 @@ function New-AiBrainConfig {
       timeoutSeconds = 5400
       maxSourceFiles = 1000
       maxSourceBytes = 8388608
+      maxPromptBytes = $script:AiBrainDefaultPromptBytes
       maxChangeFiles = 100
       maxChangeRatio = 0.25
       maxChangeBytes = 10485760
@@ -475,6 +484,8 @@ function Assert-AiBrainConfig {
     $value = [long](Get-AiBrainProperty $limits $limitName 0)
     if ($value -lt 1 -or $value -gt 1073741824) { throw "CONFIG_LIMIT_INVALID" }
   }
+  $promptLimit = [long](Get-AiBrainProperty $limits 'maxPromptBytes' $script:AiBrainDefaultPromptBytes)
+  if ($promptLimit -lt 65536 -or $promptLimit -gt 1073741824) { throw "CONFIG_LIMIT_INVALID" }
   $ratio = [double](Get-AiBrainProperty $limits 'maxChangeRatio' 0)
   if ($ratio -le 0 -or $ratio -gt 1) { throw "CONFIG_LIMIT_INVALID" }
   $bulkApproval = Get-AiBrainProperty $Config 'bulkApproval' $null
@@ -523,6 +534,16 @@ function New-AiBrainState {
     lastLinkFixCount = 0
     lastMetadataFixCount = 0
     lastSkipReason = $null
+    lastVaultFileCount = 0
+    lastVaultBytes = 0
+    lastAiInputFileCount = 0
+    lastAiInputBytes = 0
+    lastExcludedSourceCount = 0
+    lastExcludedByNameCount = 0
+    lastExcludedByContentCount = 0
+    lastChunkCount = 0
+    lastCompletedChunkCount = 0
+    lastCompileChunkFingerprints = @()
     lastRecoveryCode = $null
     lastRollbackPerformed = $false
     lastRunCompletedUtc = $null
@@ -549,6 +570,12 @@ function Set-AiBrainState {
   Set-AiBrainProperty -Object $State -Name 'updatedUtc' -Value ([DateTime]::UtcNow.ToString('o'))
   Assert-AiBrainState -State $State | Out-Null
   Write-AiBrainJsonAtomic -Path $Paths.State -Value $State
+}
+
+function Reset-AiBrainCompileCheckpoint {
+  param([Parameter(Mandatory = $true)][object]$State)
+  Set-AiBrainProperty -Object $State -Name 'lastCompileInputFingerprint' -Value $null
+  Set-AiBrainProperty -Object $State -Name 'lastCompileChunkFingerprints' -Value @()
 }
 
 function Read-AiBrainState {
@@ -909,6 +936,8 @@ function Write-AiBrainSleepReport {
   $skipCode = [string](Get-AiBrainProperty $State 'lastSkipReason' '')
   $skipText = $(if ($skipCode -eq 'source_unchanged') {
     Get-AiBrainMessage -Name skip_source_unchanged
+  } elseif ($skipCode -eq 'all_sources_excluded') {
+    Get-AiBrainMessage -Name skip_sources_excluded
   } else {
     Get-AiBrainMessage -Name skip_none
   })
@@ -929,6 +958,13 @@ function Write-AiBrainSleepReport {
     ((Get-AiBrainMessage -Name report_concepts) -f [int](Get-AiBrainProperty $State 'lastNewConceptCount' 0)),
     ((Get-AiBrainMessage -Name report_links) -f [int](Get-AiBrainProperty $State 'lastLinkFixCount' 0)),
     ((Get-AiBrainMessage -Name report_metadata) -f [int](Get-AiBrainProperty $State 'lastMetadataFixCount' 0)),
+    ((Get-AiBrainMessage -Name report_input) -f
+      [int](Get-AiBrainProperty $State 'lastAiInputFileCount' 0),
+      [long](Get-AiBrainProperty $State 'lastAiInputBytes' 0)),
+    ((Get-AiBrainMessage -Name report_excluded) -f [int](Get-AiBrainProperty $State 'lastExcludedSourceCount' 0)),
+    ((Get-AiBrainMessage -Name report_chunks) -f
+      [int](Get-AiBrainProperty $State 'lastCompletedChunkCount' 0),
+      [int](Get-AiBrainProperty $State 'lastChunkCount' 0)),
     ((Get-AiBrainMessage -Name report_skip) -f $skipText),
     ((Get-AiBrainMessage -Name report_recovery) -f $recoveryText),
     ((Get-AiBrainMessage -Name report_last_compile) -f $(if ($State.lastCompileSuccessUtc) { $State.lastCompileSuccessUtc } else { Get-AiBrainMessage -Name report_never })),

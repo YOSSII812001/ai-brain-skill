@@ -5,7 +5,7 @@ compileは「眠っている間の記憶整理」、lintは「毎日の健康診
 
 ## action
 
-- 省略 / `status`: 状態、最終成功、次回予定
+- 省略 / `status`: 状態、最終成功、次回予定、AI入力件数、除外件数、分割進捗
 - `configure compile <minutes> lint <HH:mm>`: 整理予定を変更
 - `enable`: 再開
 - `disable`: 停止
@@ -30,7 +30,7 @@ actionを検証し、次のscriptの対応するparameterへ変換して実行�
 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script-path}\manage-ai-brain-sleep.ps1" -Action Status -RuntimeRoot "{runtime-root}"
 ```
 
-`approve-bulk`では、最初に`Status`の`bulkEstimate`を表示する。対象ファイル数、対象バイト数、変更上限を人間に説明し、明示的な承認を受けた後だけ`-Action ApproveBulk`を実行する。必要なら`-BulkMaxFiles`と`-BulkMaxBytes`を渡す。承認は24時間・1回限りである。
+`approve-bulk`では、最初に`Status`の`bulkEstimate`を表示する。vault全体、AIへ渡す安全なテキスト、除外件数、分割数、wiki変更上限を分けて説明する。明示的な承認を受けた後だけ`-Action ApproveBulk`を実行する。必要なら`-BulkMaxFiles`と`-BulkMaxBytes`を渡す。承認は24時間・1回限りである。
 
 `configure`では、新旧の予定を表示して人間に1回確認する。承認後だけ`-Action Configure -CompileMinutes <minutes> -LintLocalTime <HH:mm> -ApproveScheduleChange`を実行する。
 
@@ -49,3 +49,4 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script-pat
 停止中でも`run-now`は1回だけ実行できる。定期処理中に重なった要求は、その処理の終了時に同じ非表示プロセスが引き取る。
 
 未知actionを推測しない。正常時は状態だけを短く返す。attention時は`attentionAction`を1件だけ返す。
+秘密情報候補の値、本文、対象pathは表示しない。除外理由は件数だけを表示する。
