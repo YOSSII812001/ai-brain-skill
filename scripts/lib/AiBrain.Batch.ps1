@@ -560,11 +560,16 @@ function Test-AiBrainChunkChangeSet {
     [Parameter(Mandatory = $true)][hashtable]$ProtectedWikiPaths,
     [switch]$Worker,
     [string[]]$AllowedPaths = @(),
+    [string[]]$RetainPaths = @(),
     [ValidateRange(-1, 1000)][int]$MaxChanges = -1
   )
   $allowed = @{}
   foreach ($allowedPath in $AllowedPaths) {
     $allowed[$allowedPath.Replace('\', '/').ToLowerInvariant()] = $true
+  }
+  $retained = @{}
+  foreach ($retainedPath in $RetainPaths) {
+    $retained[$retainedPath.Replace('\', '/').ToLowerInvariant()] = $true
   }
   $seen = @{}
   $safeChanges = New-Object System.Collections.ArrayList
@@ -612,6 +617,11 @@ function Test-AiBrainChunkChangeSet {
     }
   }
   $selectedChanges = @($safeChanges)
+  if ($retained.Count -gt 0) {
+    $selectedChanges = @($selectedChanges | Where-Object {
+      $retained.ContainsKey(([string]$_.path).Replace('\', '/').ToLowerInvariant())
+    })
+  }
   if ($MaxChanges -ge 0) {
     $selectedChanges = @($selectedChanges | Select-Object -First $MaxChanges)
   }

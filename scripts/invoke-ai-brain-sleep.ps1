@@ -308,6 +308,7 @@ function Read-AiBrainBatchChangeSet {
     [Parameter(Mandatory = $true)][hashtable]$ProtectedWikiPaths,
     [switch]$Worker,
     [string[]]$AllowedPaths = @(),
+    [string[]]$RetainPaths = @(),
     [ValidateRange(-1, 1000)][int]$MaxChanges = -1
   )
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or
@@ -324,6 +325,7 @@ function Read-AiBrainBatchChangeSet {
     -ProtectedWikiPaths $ProtectedWikiPaths `
     -Worker:$Worker `
     -AllowedPaths $AllowedPaths `
+    -RetainPaths $RetainPaths `
     -MaxChanges $MaxChanges
 }
 
@@ -494,6 +496,11 @@ function Invoke-AiBrainOperation {
   $workerChangeSets = New-Object System.Collections.ArrayList
   for ($index = 0; $index -lt $activeChunks.Count; $index++) {
     $chunk = $activeChunks[$index]
+    $workerRetainPaths = $(if ($Operation -eq 'lint') {
+      @($chunk.Files | ForEach-Object { [string]$_.path })
+    } else {
+      @()
+    })
     $workerChangeLimit = Get-AiBrainWorkerChangeLimit `
       -TotalWorkers $activeChunks.Count `
       -Ordinal $index `
@@ -509,6 +516,7 @@ function Invoke-AiBrainOperation {
         -Scope $Scope `
         -ProtectedWikiPaths $protectedWikiPaths `
         -Worker `
+        -RetainPaths $workerRetainPaths `
         -MaxChanges $workerChangeLimit
     } elseif ([string]$journalEntry.status -eq 'running' -and
         (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
@@ -521,6 +529,7 @@ function Invoke-AiBrainOperation {
           -Scope $Scope `
           -ProtectedWikiPaths $protectedWikiPaths `
           -Worker `
+          -RetainPaths $workerRetainPaths `
           -MaxChanges $workerChangeLimit
         Set-AiBrainBatchChunkCompleted `
           -Journal $journal `
@@ -563,6 +572,7 @@ function Invoke-AiBrainOperation {
         -Scope $Scope `
         -ProtectedWikiPaths $protectedWikiPaths `
         -Worker `
+        -RetainPaths $workerRetainPaths `
         -MaxChanges $workerChangeLimit
       Write-AiBrainTextAtomic -Path $outputPath -Text ($finalText.Trim() + "`n")
       $resultHash = Get-AiBrainFileSha256 -Path $outputPath

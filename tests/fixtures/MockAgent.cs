@@ -173,9 +173,9 @@ internal static class MockAgent
                 EscapeJson(operation) + ",\"changes\":[]}";
         }
 
-        string leaf = operation == "lint" ? "generated-lint.md" : "generated.md";
         string title = operation == "lint" ? "Generated Lint" : "Generated";
-        return NewWriteChangeSet(operation, "wiki/" + leaf, title, "synthesis");
+        string path = operation == "lint" ? "wiki/concepts/topic.md" : "wiki/generated.md";
+        return NewWriteChangeSet(operation, path, title, "synthesis");
     }
 
     private static string FindRuntimeRoot()
