@@ -1043,6 +1043,19 @@ source_paths:
           -Value $safetyContract `
           -Pattern 'write plain text instead of an unresolved wiki link'
       }
+      $lintPrompt = New-AiBrainAgentPrompt `
+        -Operation lint `
+        -Scope all `
+        -SourceBundle ([ordered]@{ schemaVersion = 1; files = @($first.Chunks[0].Files) }) `
+        -Mode worker `
+        -ChunkKey ([string]$first.Chunks[0].Key)
+      $lintPromptContract = $lintPrompt | ConvertFrom-Json
+      Assert-Match `
+        -Value ([string]$lintPromptContract.coordination.rule) `
+        -Pattern 'Modify only existing wiki paths present in this input chunk'
+      Assert-Match `
+        -Value ([string]$lintPromptContract.coordination.rule) `
+        -Pattern 'do not create new pages'
       $firstBatchId = Get-AiBrainBatchId `
         -Operation compile `
         -Scope all `
@@ -1198,6 +1211,17 @@ source_paths:
       Assert-Equal 'wiki/priority-1.md' ([string]$limited.changes[0].path)
       Assert-Equal 'wiki/priority-2.md' ([string]$limited.changes[1].path)
 
+      $owned = Test-AiBrainChunkChangeSet `
+        -ChangeSet $ranked `
+        -Operation lint `
+        -Scope all `
+        -ProtectedWikiPaths @{} `
+        -RetainPaths @('wiki/priority-1.md', 'wiki/priority-3.md') `
+        -MaxChanges 2
+      Assert-Equal 2 (@($owned.changes).Count)
+      Assert-Equal 'wiki/priority-1.md' ([string]$owned.changes[0].path)
+      Assert-Equal 'wiki/priority-3.md' ([string]$owned.changes[1].path)
+
       $unsafeDiscarded = New-ChangeSet -Changes @(
         (New-WriteChange -Path 'wiki/priority-1.md' -Content $script:TopicContent),
         (New-WriteChange -Path 'wiki/priority-2.md' -Content $script:TopicContent),
@@ -1212,6 +1236,15 @@ source_paths:
           -Scope all `
           -ProtectedWikiPaths @{} `
           -MaxChanges 2 | Out-Null
+      }
+
+      Assert-Throws -Code 'CHANGE_SET_SECRET_DETECTED' -Action {
+        Test-AiBrainChunkChangeSet `
+          -ChangeSet $unsafeDiscarded `
+          -Operation lint `
+          -Scope all `
+          -ProtectedWikiPaths @{} `
+          -RetainPaths @('wiki/priority-1.md') | Out-Null
       }
     }
 
@@ -1921,7 +1954,9 @@ status: complete
       Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
       $request = New-AiBrainRequest -Paths $fixture.Paths -Operation lint -Scope all
       Invoke-OrchestratorProcess -RuntimeRoot $fixture.Runtime
-      Assert-True (Test-Path -LiteralPath (Join-Path $fixture.Vault 'wiki\generated-lint.md') -PathType Leaf)
+      Assert-Match `
+        -Value (Read-AiBrainUtf8 -Path (Join-Path $fixture.Vault 'wiki\concepts\topic.md')) `
+        -Pattern '# Generated Lint'
       Assert-Equal 'completed' ([string](Get-AiBrainRequestLocation `
         -Paths $fixture.Paths `
         -RequestId ([string]$request.requestId)).Status)
@@ -2018,6 +2053,37 @@ status: complete
         Get-AiBrainVaultManifest -VaultPath $fixture.Vault))
       Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Journals -Filter '*.json' -File)).Count
       Assert-Equal 1 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
+    }
+
+    Test-Case -Name 'lint workers retain only their input pages before conflict merge' -Action {
+      $fixture = New-OrchestratorFixture -Target claude -RequestOperation lint
+      $fixture.Config.compileEnabled = $false
+      $fixture.Config.lintEnabled = $false
+      $fixture.Config.limits.maxSourceFiles = 1
+      Write-AiBrainJsonAtomic -Path $fixture.Paths.Config -Value $fixture.Config
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'wiki\index.md') `
+        -Text ($script:IndexContent + "MOCK_CONFLICT`n")
+      Write-AiBrainTextAtomic `
+        -Path (Join-Path $fixture.Vault 'wiki\concepts\topic.md') `
+        -Text ($script:TopicContent + "MOCK_CONFLICT`n")
+      $request = New-AiBrainRequest -Paths $fixture.Paths -Operation lint -Scope all
+      $result = Invoke-OrchestratorProcessRaw -RuntimeRoot $fixture.Runtime
+      Assert-Equal 0 ([int]$result.ExitCode)
+      $location = Get-AiBrainRequestLocation `
+        -Paths $fixture.Paths `
+        -RequestId ([string]$request.requestId)
+      Assert-Equal 'completed' ([string]$location.Status)
+      Assert-Equal 'clean' ([string]$location.Request.resultCode)
+      Assert-False (Test-Path -LiteralPath (Join-Path $fixture.Vault 'wiki\conflict.md'))
+      Assert-Equal 0 (@(Get-ChildItem -LiteralPath $fixture.Paths.Staging -Filter 'batch-*' -Directory)).Count
+      $probes = @(Get-ChildItem -LiteralPath $fixture.Runtime -Filter 'mock-agent-probe-*.json' -File)
+      Assert-Equal 2 $probes.Count
+      foreach ($probePath in $probes) {
+        $probe = Read-AiBrainJson -Path $probePath.FullName
+        Assert-Equal 'lint' ([string]$probe.operation)
+        Assert-Equal 'worker' ([string]$probe.mode)
+      }
     }
 
     Test-Case -Name 'bulk estimate approval is bounded consumed once and not required again' -Action {
