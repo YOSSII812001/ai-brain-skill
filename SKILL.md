@@ -250,6 +250,7 @@ $VaultArg = "vault=<VAULT_NAME>"
 | 2026-04-13 | description最適化・Cowork導入・環境情報設定 | トリガー精度向上・実環境適用 |
 | 2026-04-13 | ループ運用セクション追加 | /loop /wiki-compile, /loop /wiki-lint のセルフペース自動化対応 |
 | 2026-04-14 | inbox/バッチIngest機能追加 | inbox/フォルダ新設、/wiki-ingest-inboxコマンド追加 |
+| 2026-04-16 | Filing Loop実装・Fortress Review対応 | 原典（hooeem氏Karpathy式ガイド）との完全照合により13件のCRITICAL/HIGH指摘を改修。query-workflow: outputs/検索対象化+Filing還流ステップ追加+トークン効率化（3段階読込）。compile-workflow: outputs/走査+Filing統合ステップ追加。lint-workflow: 重複検出・ギャップ検出・研究質問提案・外部URL検出・lintレポートファイル出力を追加。synthesis-trigger-algorithm.md新規作成。index-template: tags/source count/スケーリングルール追加。frontmatter-template: confidence/reliability/filed/statusライフサイクル追加。quality-standards: append原則・complete判定基準・信頼度順序追加 |
 | 2026-07-17 | 睡眠モード追加 | 4時間ごとの記憶整理、毎日17:00の健康診断、非表示実行、安全な復元、Human Gateを統合 |
 | 2026-07-18 | 安全な除外と大規模vault分割を追加 | 秘密情報候補を送信せず、分割再開後もwikiを1回だけ安全に反映するため |
 | 2026-07-24 | 直近実行の確認手順を追加 | 正常待機表示と最新taskの成否を混同せず、成功後の失敗や定期実行の空白を見落とさないため |
