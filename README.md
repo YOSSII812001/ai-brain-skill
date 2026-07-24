@@ -181,7 +181,16 @@ Sleep Mode is the normal operating mode on Windows. It treats compile like the b
 | **Compile** | Every 4 hours | Connect new knowledge, promote useful stubs, and rebuild the index |
 | **Lint** | Daily at 17:00 local time | Check links, frontmatter, naming, stale pages, and orphans |
 
-One Task Scheduler task carries both triggers. It uses S4U, `-WindowStyle Hidden`, a hidden task setting, `CreateNoWindow`, and a Windows Job Object. Windows may show one administrator confirmation during the interactive initial setup. After registration, the release gate verifies that scheduled and "run now" paths do not show a terminal. The task does not wake a sleeping PC.
+### How scheduling works on Windows
+
+Sleep Mode does not keep a PowerShell process running. Windows Task Scheduler owns the schedule and starts PowerShell only when work is due:
+
+1. Applied setup registers one Task Scheduler task for the vault.
+2. That task stores two triggers: a repeating trigger for compile and a daily trigger for lint.
+3. When either trigger fires, Task Scheduler launches Windows PowerShell 5.1 with `-NoProfile`, `-NonInteractive`, and `-WindowStyle Hidden`. PowerShell runs `%LOCALAPPDATA%\ai-brain\<vault-id>\bootstrap\ai-brain-sleep-bootstrap.ps1`.
+4. The bootstrap resolves the installed runtime, runs the compile/lint orchestrator, updates the state and `wiki/_meta/sleep-report.md`, and exits. Task Scheduler then waits for the next trigger.
+
+The task uses S4U, a hidden task setting, `CreateNoWindow`, and a Windows Job Object to control the full child process tree. Windows may show one administrator confirmation during the interactive initial setup. After registration, the release gate verifies that scheduled and "run now" paths do not show a terminal. The task does not wake a sleeping PC.
 
 The runtime first detects whether source content changed. If nothing changed, compile finishes without calling the AI agent. Lint still runs once per day.
 

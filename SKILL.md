@@ -46,6 +46,15 @@ Obsidian vault上にKarpathy提唱のAI外部脳システムを構築・運用�
 
 `status`は安全に直せる既知driftだけを自動修復する。`paused`や`attention`を状態確認だけで解除しない。
 
+利用者が直近の実行有無や成否を尋ねた場合、`status`の`ready` / `healthy`だけで成功と判断しない。
+
+1. `lastCompileSuccessUtc`と`lastLintSuccessUtc`で、操作別の最終成功を確認する。
+2. Windowsでは対象taskの`Get-ScheduledTaskInfo`から`LastRunTime`、`LastTaskResult`、`NextRunTime`、`NumberOfMissedRuns`を確認する。
+3. 最終成功より新しい技術ログがあれば、操作別の完了・失敗eventを確認する。秘密情報候補の値、本文、対象pathは表示しない。
+4. 時刻は設定されたtimezoneへ変換し、compile間隔またはlint日次予定に空白があれば明示する。
+
+回答では「最後に成功した実行」と「それより新しい失敗した試行」を分ける。`ready`は待機状態、`healthy`は既知の要対応がない状態であり、直近taskの終了コード0を意味しない。
+
 ## 睡眠モード
 
 詳細は`references/sleep-mode.md`をReadすること。
@@ -243,3 +252,4 @@ $VaultArg = "vault=<VAULT_NAME>"
 | 2026-04-14 | inbox/バッチIngest機能追加 | inbox/フォルダ新設、/wiki-ingest-inboxコマンド追加 |
 | 2026-07-17 | 睡眠モード追加 | 4時間ごとの記憶整理、毎日17:00の健康診断、非表示実行、安全な復元、Human Gateを統合 |
 | 2026-07-18 | 安全な除外と大規模vault分割を追加 | 秘密情報候補を送信せず、分割再開後もwikiを1回だけ安全に反映するため |
+| 2026-07-24 | 直近実行の確認手順を追加 | 正常待機表示と最新taskの成否を混同せず、成功後の失敗や定期実行の空白を見落とさないため |
