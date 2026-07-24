@@ -30,6 +30,8 @@ actionを検証し、次のscriptの対応するparameterへ変換して実行�
 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script-path}\manage-ai-brain-sleep.ps1" -Action Status -RuntimeRoot "{runtime-root}"
 ```
 
+`status`または直近実行の確認では、script出力だけで成功と判定しない。runtime設定の`taskPath`と`taskName`を使い、Windows Task Schedulerの`LastRunTime`、`LastTaskResult`、`NextRunTime`、`NumberOfMissedRuns`も取得する。最終成功より新しい`{runtime-root}\logs\sleep-*.jsonl`があれば、操作別の完了・失敗eventを確認する。時刻は設定timezoneへ変換し、compileとlintそれぞれについて、最後の成功、新しい失敗試行、次回予定、予定間隔の空白を分けて伝える。`ready` / `healthy`だけを直近成功の証拠にしない。
+
 `approve-bulk`では、最初に`Status`の`bulkEstimate`を表示する。vault全体、AIへ渡す安全なテキスト、除外件数、分割数、wiki変更上限を分けて説明する。明示的な承認を受けた後だけ`-Action ApproveBulk`を実行する。必要なら`-BulkMaxFiles`と`-BulkMaxBytes`を渡す。承認は24時間・1回限りである。
 
 `configure`では、新旧の予定を表示して人間に1回確認する。承認後だけ`-Action Configure -CompileMinutes <minutes> -LintLocalTime <HH:mm> -ApproveScheduleChange`を実行する。
