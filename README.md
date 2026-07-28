@@ -1,208 +1,189 @@
-# AI External Brain Skill for Claude Code and Codex
+# AI Brain — Obsidianを「話しかけて使う」外部脳に
 
-Karpathy's "AI External Brain" system implemented as an Obsidian skill for Claude Code and Codex.
+Claude Code / Codex対応
 
-Build a personal knowledge base that **gets smarter the more you use it** -- without having to remember maintenance commands.
+Claude CodeやCodexに普段の言葉で頼むだけで、Obsidianを「使うほど育つ外部脳」に変えるskillです。
 
-## What Is Better Now
+難しいコマンドを覚える必要はありません。たとえば、こんな頼み方で使えます。
 
-This release makes the skill easier to install, safer to run, and harder to accidentally drift out of sync.
-
-| Area | Before | Now | Why it matters |
-|------|--------|-----|----------------|
-| Setup | Users had to copy files and fill paths by hand | `scripts/setup-ai-brain.ps1` prints a dry-run plan, replaces placeholders, and copies the right files only when `-Apply` is passed | You can review every change before anything touches your local Claude, Codex, or vault files |
-| Obsidian paths | A user-specific Obsidian path could leak into the public skill | Environment values live in the vault `CLAUDE.md` and setup replaces placeholders | The public skill works on other machines without editing six separate places |
-| Command updates | Installed `/wiki-*` commands could silently become stale | `scripts/check-command-sync.ps1` compares installed commands with the repository version | You can detect old local commands before they confuse the workflow |
-| Reference files | Root references and packaged skill references could drift apart | `scripts/check-reference-parity.ps1` verifies both copies match | Fixes made for real use are not lost in the next distribution |
-| Scheduled runs | Users had to remember compile and lint commands | Sleep Mode compiles every 4 hours and lints daily at 17:00 by default | The external brain maintains itself in the background |
-| Background execution | A PowerShell window could flash when a task started | One hidden S4U task, a hidden bootstrap, and a Job Object control the full child process tree | After the interactive setup, scheduled and "run now" paths do not open or close a terminal window |
-| Sensitive notes | One secret-like source stopped the whole maintenance cycle | Files with a denied name or secret-like content are excluded as a whole before staging or prompting | Safe notes continue to be organized without copying the excluded path or content into AI prompts or logs |
-| Large vaults | One prompt had to hold the full text input | Compile and lint use deterministic, prompt-bounded chunks with checkpoints | Interrupted work resumes from the unfinished chunk and the vault is still updated only once |
-| Recovery | A failed run could leave partial changes or an unexplained stop | Staging, journals, rollback, a daily report, and `wiki-sleep doctor` provide recovery | The vault stays usable and tells the user one next action |
-| Validation | Broken links, stale strings, script syntax, and file-count drift were manual checks | `scripts/validate-repo.ps1` and GitHub Actions run the same lightweight checks | Pull requests get a repeatable safety net |
-| Self-improvement | Lint findings stopped at vault cleanup | Repeated structural findings can now become skill improvement drafts | The skill can improve its own instructions instead of only patching one note |
-
-## Architecture
-
+```text
+このURLを外部脳に入れて
+最近追加したメモを整理して
+手元の知識から、RAGとファインチューニングの違いを教えて
+リンク切れや古い情報がないか見て
+自動整理が動いているか教えて
 ```
+
+AI Brainが依頼の意図を読み取り、取込・整理・検索・点検などの適切な処理へつなぎます。`/wiki-query`や`/wiki-compile`などのスラッシュコマンドは、直接操作したい人向けの任意機能です。
+
+> [!NOTE]
+> このskillは、Obsidianそのものを置き換えるアプリではありません。Claude CodeまたはCodexとObsidianの間に入り、自然な依頼をナレッジベース操作へ変換するラッパーとして働きます。
+
+## できること
+
+| やりたいこと | 普段の言葉での頼み方 | AI Brainの処理 |
+|---|---|---|
+| 記事やメモを追加する | 「このURLを外部脳に入れて」 | 内容を保存し、要約と関連ページを作る |
+| 複数のメモをまとめて取り込む | 「inboxのメモを全部整理して」 | inboxを順番に取り込み、処理済みのものを整理する |
+| 知識をつなぎ直す | 「最近のメモを整理して」 | 関連する知識を結び、目次を更新する |
+| 手元の知識から答えを得る | 「過去のメモから○○を教えて」 | ナレッジベースを横断し、出典付きで答える |
+| 状態を点検する | 「リンク切れや古い情報を見て」 | リンク、書式、古いページなどを点検する |
+| 自動整理を管理する | 「自動整理の状態を教えて」 | 状態や直近の結果を確認する |
+
+内部では、次の4つの処理を使い分けています。
+
+| 処理 | 役割 |
+|---|---|
+| **Ingest（取込）** | URL、ファイル、文章を外部脳へ追加する |
+| **Compile（整理）** | 新旧の知識を結び、ページと目次を整える |
+| **Query（検索・回答）** | 複数のメモを横断し、出典付きの答えを作る |
+| **Lint（点検）** | リンク切れ、書式の乱れ、古い情報を見つけて直す |
+
+## 仕組み
+
+既存のノートや取り込んだ原文を守りながら、AIが管理するwiki層だけを育てます。
+
+```text
 Obsidian Vault
-├── main/          <- Your existing content (AI read-only)
-├── raw/           <- New source materials (AI read-only)
+├── main/          ← 既存のノート（AIは読み取りのみ）
+├── inbox/         ← まとめて取り込みたいファイルの一時置き場
+├── raw/           ← 取り込んだ原文（AIは読み取りのみ）
 │   ├── articles/  papers/  repos/  datasets/  assets/
-├── wiki/          <- AI-maintained knowledge layer
+├── wiki/          ← AIが整理・更新するナレッジ層
 │   ├── index.md  log.md
 │   ├── _meta/sleep-report.md
 │   ├── concepts/  entities/  sources/
 │   ├── syntheses/  outputs/  attachments/
-├── CLAUDE.md      <- Schema definition (< 80 lines)
-└── (existing folders remain untouched)
+├── CLAUDE.md      ← 構造と運用ルール
+└── その他の既存フォルダはそのまま
 ```
 
-### 3-Layer Structure
+| 層 | 場所 | 役割 |
+|---|---|---|
+| 既存コンテンツ | `main/`など | AIは読めるが、書き換えない |
+| 原文 | `raw/` | 取り込んだ素材を保存し、書き換えない |
+| ナレッジ | `wiki/` | AIが要約、関連付け、検索結果を管理する |
+| ルール | `CLAUDE.md` | vault固有の場所や運用ルールを定義する |
 
-| Layer | Path | Role |
-|-------|------|------|
-| Layer 1 | `main/` | Your existing content. AI reads but never modifies |
-| Layer 2 | `raw/` | New source materials. AI reads but never modifies |
-| Layer 3 | `wiki/` | AI-maintained knowledge. Auto-generated and maintained |
-| Schema | `CLAUDE.md` | Schema file defining structure, naming, operations |
+## 必要なもの
 
-### 4 Operation Cycles
+- Windows
+- [Claude Code](https://claude.ai/claude-code) または [Codex](https://github.com/openai/codex)
+- [Obsidian](https://obsidian.md) 1.12.4以降（CLI対応版）
+- Git
 
-| Cycle | Command | Description |
-|-------|---------|-------------|
-| **Ingest** | `/wiki-ingest` | Process new source materials into wiki |
-| **Compile** | `/wiki-compile` | Build/update wiki pages, maintain index |
-| **Query** | `/wiki-query` | Cross-reference wiki, synthesize cited answers |
-| **Lint** | `/wiki-lint` | Health check: fix broken links, stale content |
+## 導入方法
 
-Plus `/wiki-init` for initial scaffolding.
+### いちばん簡単な方法：AIにセットアップを頼む
 
-## Installation
+リポジトリをcloneしたら、Claude CodeまたはCodexで次のように頼んでください。
 
-### Prerequisites
+```text
+このai-brain-skillをセットアップして。
+Obsidianのvaultは「C:\path\to\your\Obsidian Vault」です。
+まず変更内容だけ見せて、確認後に適用して。
+```
 
-- [Claude Code](https://claude.ai/claude-code) or [Codex](https://github.com/openai/codex) installed and signed in
-- [Obsidian](https://obsidian.md) installed with CLI support (v1.12.4+)
+AIは[SETUP.md](SETUP.md)に従い、最初に変更予定だけを表示します。あなたが内容を確認するまで、skillやWindowsの自動実行設定は適用しません。
 
-### Quick Install
+セットアップ中に、自動整理を次のどれにするか1回だけ聞きます。
 
-1. **Clone this repository.**
+- 標準設定を使う：4時間ごとに知識を整理し、毎日17:00に点検する
+- 好きな時間へ変える
+- 自動整理を使わない
 
-2. **Give your AI assistant the vault path and run a dry run:**
+導入後は、普段の言葉でそのまま使えます。
+
+### 手動でセットアップする
+
+まずは変更を加えない確認モードで実行します。
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
   -VaultPath "C:\path\to\your\Obsidian Vault" `
   -VaultName "Obsidian Vault" `
-  -ObsidianCliPath "C:\Program Files\Obsidian\Obsidian.exe" `
+  -Target codex `
   -SleepModeChoice Accept
 ```
 
-The AI skill first explains compile as "organizing memories during sleep" and lint as a "daily health check," then asks whether the default 4-hour / 17:00 schedule is suitable. After the user answers, the AI passes an explicit `Accept`, `Custom`, or `Disable` choice to the non-interactive setup script. The script is dry-run by default; add `-Apply` only after the plan and any initial bulk estimate are approved.
-See [SETUP.md](SETUP.md) for the AI-assisted setup contract.
+表示されたコピー先、初回整理の見積り、自動整理の予定を確認します。問題がなければ、同じコマンドへ`-Apply`を追加して適用します。
 
-3. **Initialize the vault:**
-```
-/wiki-init
-```
-
-This scaffolds `raw/` and `wiki/` folders in your vault.
-
-## File Structure
-
-```
-ai-brain-skill/
-├── SETUP.md                         # AI-assisted setup contract
-├── .github/
-│   └── workflows/
-│       └── validate.yml             # Lightweight repository validation
-├── skill/
-│   ├── SKILL.md                    # Main skill file
-│   └── references/                 # 23 micro-reference files
-│       ├── schema-overview.md      # 3-layer structure definition
-│       ├── environment-config.md   # Environment source-of-truth rules
-│       ├── raw-layer-rules.md      # raw/ directory rules
-│       ├── wiki-layer-structure.md # wiki/ subdirectory listing
-│       ├── naming-conventions.md   # Kebab-case, author-year format
-│       ├── frontmatter-template.md # YAML frontmatter template
-│       ├── page-threshold.md       # When to create full vs stub pages
-│       ├── quality-standards.md    # Word counts, citation rules
-│       ├── ingest-workflow.md      # Ingest cycle steps
-│       ├── inbox-rules.md          # inbox/ safety and cleanup rules
-│       ├── inbox-workflow.md       # Batch inbox ingest workflow
-│       ├── compile-workflow.md     # Compile cycle steps
-│       ├── query-workflow.md       # Query cycle steps
-│       ├── lint-workflow.md        # Lint cycle steps
-│       ├── loop-operation.md       # /loop self-paced operation
-│       ├── sleep-mode.md           # Background schedule, safety, and recovery
-│       ├── self-improvement-workflow.md # Skill improvement draft flow
-│       ├── init-workflow.md        # Init/scaffold steps
-│       ├── index-template.md       # wiki/index.md template
-│       ├── log-template.md         # wiki/log.md template
-│       ├── concept-template.md     # Concept article template
-│       ├── source-template.md      # Source summary template
-│       └── migration-strategy.md   # Coexistence with existing files
-├── commands/
-│   ├── wiki-init.md                # /wiki-init scaffold command
-│   ├── wiki-ingest.md              # /wiki-ingest <source> command
-│   ├── wiki-ingest-inbox.md        # /wiki-ingest-inbox batch command
-│   ├── wiki-compile.md             # /wiki-compile command
-│   ├── wiki-query.md               # /wiki-query <question> command
-│   ├── wiki-lint.md                # /wiki-lint command
-│   └── wiki-sleep.md               # Sleep Mode status and controls
-├── scripts/
-│   ├── setup-ai-brain.ps1          # Dry-run-first installer
-│   ├── ai-brain-sleep-bootstrap.ps1 # Stable hidden task entry point
-│   ├── invoke-ai-brain-sleep.ps1   # Compile/lint orchestrator
-│   ├── manage-ai-brain-sleep.ps1   # Status, repair, and controls
-│   ├── lib/                         # Runtime, process, task, and transaction helpers
-│   ├── validate-repo.ps1           # Local and CI validation
-│   ├── check-command-sync.ps1      # Installed command drift check
-│   ├── check-reference-parity.ps1  # root vs distribution reference check
-│   └── install-scheduled-tasks.ps1 # Task Scheduler registration helper
-├── tests/
-│   └── run-tests.ps1               # PowerShell 5.1 and pwsh regression tests
-└── vault/
-    └── CLAUDE.md                   # Vault schema file template
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-ai-brain.ps1 `
+  -VaultPath "C:\path\to\your\Obsidian Vault" `
+  -VaultName "Obsidian Vault" `
+  -Target codex `
+  -SleepModeChoice Accept `
+  -Apply
 ```
 
-## Usage
+Claude Codeへ入れる場合は、`-Target codex`を`-Target claude`へ変えてください。詳しい設定、時刻変更、再設定は[SETUP.md](SETUP.md)にまとめています。
 
-### Ingest a new source
+## 使い方
+
+### 普段の使い方
+
+特別な書式はありません。Claude CodeやCodexに、やりたいことをそのまま伝えます。
+
+```text
+この論文を外部脳に入れて: https://example.com/paper
+
+プロジェクトAについて、これまでのメモをまとめて
+
+今日追加した情報を整理して、関連する知識につないで
+
+外部脳の調子を見て、直せる問題は直して
 ```
+
+「外部脳」「ナレッジベース」「Obsidian」「メモを整理」「手元の知識から教えて」などの言葉を含めると、AIがこのskillを見つけやすくなります。
+
+### スラッシュコマンドで直接操作する
+
+スラッシュコマンドは必須ではありません。処理を明示したい場合だけ使ってください。
+
+| コマンド | 用途 | 自然な頼み方の例 |
+|---|---|---|
+| `/wiki-init` | 初回のフォルダ作成 | 「外部脳を初期化して」 |
+| `/wiki-ingest` | URLやファイルを1件取り込む | 「このURLを外部脳に入れて」 |
+| `/wiki-ingest-inbox` | inboxをまとめて取り込む | 「inboxを全部整理して」 |
+| `/wiki-compile` | 知識と目次を整理する | 「最近のメモを整理して」 |
+| `/wiki-query` | 手元の知識を検索する | 「過去のメモから○○を教えて」 |
+| `/wiki-lint` | リンクや書式を点検する | 「外部脳を健康診断して」 |
+| `/wiki-sleep` | 自動整理を管理する | 「自動整理の状態を教えて」 |
+
+直接操作する場合の例です。
+
+```text
 /wiki-ingest https://example.com/interesting-article
-/wiki-ingest path="existing-note.md"
-```
-
-### Query your knowledge base
-```
-/wiki-query What are the key differences between RAG and fine-tuning?
-```
-
-### Compile (rebuild index, upgrade stubs)
-```
+/wiki-query RAGとファインチューニングの違いは？
 /wiki-compile all
-/wiki-compile concepts
-```
-
-### Health check
-```
 /wiki-lint all
-/wiki-lint links
-/wiki-lint stale
+/wiki-sleep status
 ```
 
-## Sleep Mode: maintenance without maintenance
+## 睡眠モード：覚えていなくても整理が続く
 
-Sleep Mode is the normal operating mode on Windows. It treats compile like the brain organizing memories during sleep and lint like a daily health check.
+睡眠モードは、外部脳をWindowsの裏側で定期的に整える機能です。
 
-| Operation | Default schedule | What it does |
-|-----------|------------------|--------------|
-| **Compile** | Every 4 hours | Connect new knowledge, promote useful stubs, and rebuild the index |
-| **Lint** | Daily at 17:00 local time | Check links, frontmatter, naming, stale pages, and orphans |
+| 処理 | 標準の予定 | 内容 |
+|---|---|---|
+| 記憶の整理（Compile） | 4時間ごと | 新しい知識を結び、役立つ下書きを育て、目次を更新する |
+| 健康診断（Lint） | 毎日17:00 | リンク、書式、名前、古いページ、孤立ページを点検する |
 
-### How scheduling works on Windows
+常駐アプリは動かしません。Windowsタスクスケジューラが必要な時だけPowerShellを起動し、処理後に終了します。登録後の定期実行や「今すぐ整理」では、通常はターミナルを表示しません。PCをスリープ解除することもありません。
 
-Sleep Mode does not keep a PowerShell process running. Windows Task Scheduler owns the schedule and starts PowerShell only when work is due:
+最新の結果と次回予定は、`wiki/_meta/sleep-report.md`で確認できます。状態変更も自然な言葉で頼めます。
 
-1. Applied setup registers one Task Scheduler task for the vault.
-2. That task stores two triggers: a repeating trigger for compile and a daily trigger for lint.
-3. When either trigger fires, Task Scheduler launches Windows PowerShell 5.1 with `-NoProfile`, `-NonInteractive`, and `-WindowStyle Hidden`. PowerShell runs `%LOCALAPPDATA%\ai-brain\<vault-id>\bootstrap\ai-brain-sleep-bootstrap.ps1`.
-4. The bootstrap resolves the installed runtime, runs the compile/lint orchestrator, updates the state and `wiki/_meta/sleep-report.md`, and exits. Task Scheduler then waits for the next trigger.
+```text
+自動整理の状態を教えて
+今すぐ知識を整理して
+毎日の健康診断を今すぐ実行して
+自動整理を止めて
+自動整理を再開して
+調子が悪いので診断して
+```
 
-The task uses S4U, a hidden task setting, `CreateNoWindow`, and a Windows Job Object to control the full child process tree. Windows may show one administrator confirmation during the interactive initial setup. After registration, the release gate verifies that scheduled and "run now" paths do not show a terminal. The task does not wake a sleeping PC.
-
-The runtime first detects whether source content changed. If nothing changed, compile finishes without calling the AI agent. Lint still runs once per day.
-
-Before either operation calls the AI, the runtime excludes any text file whose name is denied or whose content looks like a secret. It excludes the whole file, keeps the original unchanged, and reports only counts. An excluded wiki page is also protected from AI writes and deletes.
-
-The remaining safe input is divided by a stable path hash. Every serialized prompt must fit the configured byte budget. Completed chunks are checkpointed, so the same input resumes without repeating finished AI calls. Workers cannot edit `wiki/index.md` or `wiki/log.md`; one final pass owns those shared files. Duplicate paths across chunks stop the run before the vault changes.
-
-Only `wiki/` is writable; `main/` and `raw/` remain read-only. All chunk results are merged in runtime staging, validated as one change set, and then applied in one journaled transaction. If validation or the final fingerprint check fails, rollback restores the full pre-run manifest.
-
-Users do not need to remember how the system works. Open `wiki/_meta/sleep-report.md` to see the latest result, the next compile and lint, the safe AI input count, excluded-file count, chunk progress, any automatic recovery, and—only when needed—one action to take.
-
-Use the skill command for controls instead of editing Task Scheduler directly:
+内部の直接コマンドは次のとおりです。
 
 ```text
 /wiki-sleep status
@@ -213,38 +194,77 @@ Use the skill command for controls instead of editing Task Scheduler directly:
 /wiki-sleep doctor
 ```
 
-Sleep Mode is registered by the applied setup unless the user declines it. Headless installation must pass an explicit choice such as `-SleepModeChoice Accept`, `Custom`, or `Disable`. Advanced details, migration behavior, large first-run approval, recovery, and uninstall are documented in [references/sleep-mode.md](references/sleep-mode.md).
+詳しい安全対策、復旧、削除方法は[睡眠モードの仕様](references/sleep-mode.md)を参照してください。
 
-Runtime metadata and safe JSONL logs live under `%LOCALAPPDATA%\ai-brain\<vault-id>\`. Raw agent output and vault content are not written to those logs.
+## データを守る仕組み
 
-## Validation
+- AIが書き込む場所は`raw/`と`wiki/`に限定します。既存ノートは変更せず、`raw/`へ保存した原文もあとから書き換えません。
+- 秘密情報らしい内容を含むファイルは、AIへ渡す前にファイル単位で除外します。
+- 大きなvaultは安定した単位に分け、途中で止まっても完了済みの処理を繰り返しません。
+- 変更は一度作業領域で検証し、問題がなければまとめて反映します。
+- 反映に失敗した場合は、記録を使って元の状態へ戻します。
+- ログには、vaultの本文やAIの生出力を保存しません。
 
-Run the local validator before opening a pull request:
+## 主な改善点
+
+現在の版では、最初の公開版より導入と日常利用を大きく簡単にしています。
+
+| 改善 | どう変わったか |
+|---|---|
+| 自然言語の入口 | コマンド名を知らなくても、依頼の意図から適切な処理を選べる |
+| 安全なセットアップ | 適用前に変更予定と初回整理の見積りを確認できる |
+| 環境ごとの設定 | vaultやObsidianの場所を1回のセットアップで反映できる |
+| 自動整理 | CompileとLintをWindowsの裏側で定期実行できる |
+| 大きなvaultへの対応 | 入力を分け、途中から再開し、最後にまとめて反映できる |
+| 秘密情報の除外 | 怪しいファイルは全文を除外し、内容や場所をログへ残さない |
+| 復旧 | 作業記録、ロールバック、診断、日次レポートを備える |
+| 継続的な検証 | ローカル検証とGitHub Actionsで配布物のずれを検出する |
+
+## リポジトリ構成
+
+```text
+ai-brain-skill/
+├── README.md                        # この説明
+├── SETUP.md                         # AIと進める詳しいセットアップ
+├── SKILL.md                         # Codex向け配布用skill
+├── skill/
+│   ├── SKILL.md                     # Claude Code向け配布用skill
+│   └── references/                  # 23 micro-reference files
+├── commands/                        # 7個のwiki-*コマンド
+├── references/                      # Codex向け参照ファイル
+├── scripts/
+│   ├── setup-ai-brain.ps1           # 確認モードから始まるインストーラー
+│   ├── invoke-ai-brain-sleep.ps1    # 自動整理の実行役
+│   ├── manage-ai-brain-sleep.ps1    # 状態確認、修復、操作
+│   └── validate-repo.ps1            # ローカル・CI共通の検証
+├── tests/
+│   └── run-tests.ps1                # PowerShell回帰テスト
+└── vault/
+    └── CLAUDE.md                    # vault用ルールのひな型
+```
+
+## 開発者向け検証
+
+READMEやskillを変更した場合は、次の検証を実行します。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-repo.ps1
 ```
 
-The validator checks reference parity, README file counts, command count, stale forbidden strings, PowerShell syntax, the workflow file, internal Markdown links, and the mirrored skill hash. CI also runs `tests/run-tests.ps1` in Windows PowerShell 5.1 and PowerShell 7.
+この検証では、参照ファイルの同期、READMEのファイル数、古い設定値、PowerShell構文、Markdownリンクなどを確認します。CIではWindows PowerShell 5.1とPowerShell 7の回帰テストも実行します。
 
-To check installed command drift:
+## 設計方針
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-command-sync.ps1 -Target claude
-```
+- 必要な参照ファイルだけを読み、AIの会話領域を使いすぎない
+- 既存のvaultを移動せず、そのまま共存する
+- AIが管理する範囲を`wiki/`へ限定する
+- すべてのwikiページへYAML frontmatterを付け、検索と点検に使う
+- コマンドを知っている人にも、知らない人にも同じ機能を提供する
 
-## Design Principles
+## クレジット
 
-- **All references are dynamically loaded** -- no static `@import`, minimizing context window usage
-- **Reference files stay small and focused** -- micro-files loaded only when needed
-- **Existing vault content is preserved** -- coexistence mode, no migration required
-- **obsidian-cli as transport layer** -- the skill delegates all vault I/O to obsidian-cli
-- **YAML frontmatter on all wiki pages** -- enables structured queries and lint checks
+[Andrej Karpathy](https://x.com/karpathy)の「LLM Wiki / AI External Brain」という考え方（[original gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)）をもとにしています。詳しいガイドは[@hooeem](https://x.com/hooeem/status/2041196025906418094)、日本語での紹介は[@ClaudeCode_love](https://x.com/ClaudeCode_love/status/2042886840177557533)を参考にしています。
 
-## Credits
-
-Based on the "LLM Wiki" / AI External Brain concept by [Andrej Karpathy](https://x.com/karpathy) ([original gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)), detailed guide by [@hooeem](https://x.com/hooeem/status/2041196025906418094), and Japanese coverage by [@ClaudeCode_love](https://x.com/ClaudeCode_love/status/2042886840177557533).
-
-## License
+## ライセンス
 
 MIT
