@@ -98,7 +98,7 @@ ai-brain-skill/
 │       └── validate.yml             # Lightweight repository validation
 ├── skill/
 │   ├── SKILL.md                    # Main skill file
-│   └── references/                 # 23 micro-reference files
+│   └── references/                 # 24 micro-reference files
 │       ├── schema-overview.md      # 3-layer structure definition
 │       ├── environment-config.md   # Environment source-of-truth rules
 │       ├── raw-layer-rules.md      # raw/ directory rules

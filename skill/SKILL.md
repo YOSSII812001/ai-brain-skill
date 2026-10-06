@@ -1,18 +1,18 @@
 ---
 name: ai-brain
-description: |
-  Karpathy式AI外部脳。Obsidian vault上でraw/wiki/CLAUDE.mdの3層構造により
-  パーソナルナレッジベースを管理するスキル。Ingest/Compile/Query/Lintの4サイクル運用。
-  「ナレッジベース」「外部脳」「知識管理」「wiki」「Obsidian」「ノート整理」
-  「情報整理」「記事取り込み」「論文管理」に関するリクエストが来たら必ずこのスキルを使うこと。
-  /wiki-ingest, /wiki-ingest-inbox, /wiki-compile, /wiki-query, /wiki-lint, /wiki-init, /wiki-sleep コマンドもこのスキルが担当。
-  ソース素材の取込、wikiページの構築・更新、横断検索と引用付き回答生成、
-  ヘルスチェックと自動修正など、ナレッジベース関連の操作は全てこのスキルの守備範囲。
-  トリガー: ai-brain, knowledge-base, wiki-ingest, wiki-ingest-inbox, wiki-compile, wiki-query, wiki-lint,
-  wiki-init, wiki-sleep, 自動整理, 睡眠モード, ナレッジベース, 外部脳, 知識管理, Obsidian, ノート整理, 情報整理
+description: "Karpathy式AI外部脳（Obsidian vaultのraw/wiki管理）。ingest・compile・query・lint・睡眠モードを担当。トリガー: ai-brain, 外部脳, ナレッジベース, wiki-compile, wiki-lint, wiki-sleep"
 ---
 
 # AI External Brain — Karpathy式ナレッジベース管理
+
+## 発動条件（トリガー詳細）
+
+次のリクエストでは、必ずこのスキルを使う。
+
+- 話題: 「ナレッジベース」「外部脳」「知識管理」「wiki」「Obsidian」「ノート整理」「情報整理」「記事取り込み」「論文管理」
+- コマンド: `/wiki-ingest` `/wiki-ingest-inbox` `/wiki-compile` `/wiki-query` `/wiki-lint` `/wiki-init` `/wiki-sleep`
+- 操作: ソース素材の取込、wikiページの構築・更新、横断検索と引用付き回答生成、ヘルスチェックと自動修正、睡眠モード（自動整理）の設定・状態・復旧
+- トリガー語: ai-brain, knowledge-base, wiki-ingest, wiki-ingest-inbox, wiki-compile, wiki-query, wiki-lint, wiki-init, wiki-sleep, 自動整理, 睡眠モード, ナレッジベース, 外部脳, 知識管理, Obsidian, ノート整理, 情報整理
 
 ## 概要
 
@@ -236,6 +236,24 @@ $VaultArg = "vault=<VAULT_NAME>"
 ## ループ運用（上級者向け互換）
 
 通常運用は睡眠モードを使う。`/loop /wiki-compile`と`/loop /wiki-lint`も、独自lockや直接編集をせず、1回のpending requestとして共通オーケストレーターへ渡す。詳細は`references/loop-operation.md`をReadすること。
+
+## トラブルシューティング
+
+睡眠モード（compile / lint）が止まったときの入口。詳しい切り分け手順は `references/sleep-mode.md` の「止まったときの切り分け」をReadすること。
+
+| 症状・eventCode | 主な原因 | 対処 |
+|---|---|---|
+| `REPEATED_FAILURE_PAUSED` / `attention` | 同じ失敗が続き自動停止した | 原因を直す前に再実行しない。`wiki-sleep doctor`で再開し、原因を直してから再実行する |
+| `FRONTMATTER_YAML_INVALID` | wikiに元からある書式が、検証器の許容範囲外（行頭ハイフンのリスト、複数行にまたがる値、`[`から`]`を複数行に分けた配列） | 既存wikiを検証器で読み取り検査して対象を特定し、退避してから書式だけ直す（多数ページは人の承認） |
+| `FRONTMATTER_DUPLICATE_KEY` | 同じキーをfrontmatterに2回書いている | 重複を1つにする。値が異なる場合は、どちらが正かを確認してから直す |
+| `WIKILINK_INVALID` | 本文の`[[...]]`の中身が空・絶対パス・`..`を含む（説明文として書いた`[[...]]`等） | 全角`［［`へ置き換えるか、表記を変える |
+| `WIKILINK_TARGET_MISSING` | リンク先ページが存在しない | stubを作るか、リンクを直す |
+| `SOURCE_FILE_PROMPT_LIMIT_EXCEEDED` | 1ファイルがprompt上限（既定は約640KB）を超える | 巨大ファイルをvault外へ移す。上限を上げる場合は、トークン消費の増加に注意する |
+| `AGENT_EXIT_NONZERO`（出力が極端に短い） | 利用上限などでAIが途中終了した | 上限の回復後に`run-now`で再実行する。完了済みの分割は再利用される |
+| `SLEEP_MODE_NOT_READY_RUN_DOCTOR` | 状態が`paused`または`attention` | `wiki-sleep doctor` |
+| `CONTROL_RUNTIME_BUSY` | 別の処理が実行中 | 重ねて起動せず、Task Schedulerと技術ログの終了を待つ |
+
+`run-now`は要求を登録するだけで、実処理は非表示のタスクが行う。呼び出し側のコマンドが時間切れで打ち切られた直後に、タスクが強制終了（`0xC000013A`）した例がある（因果は未確定）。長い待機は、別プロセスで技術ログのeventCodeを見て行う。
 
 ## 関連スキル
 
