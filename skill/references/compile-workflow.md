@@ -27,12 +27,14 @@ compileは、人が睡眠中に記憶を整理するように、新しい情報�
 ## 整理内容
 
 1. `wiki/sources/`の新規・更新ページを確認する
-2. 2つ以上のsourceがあるstubを完全記事へ育てる
-3. 既存の概念へ新情報を統合する
-4. wikilinkを補強する
-5. `wiki/index.md`を再構築する
-6. 必要な統合分析を`wiki/syntheses/`へ作る
-7. frontmatterの`date_modified`を更新する
-8. `wiki/log.md`へ記録する
+2. `wiki/outputs/`の未処理回答（`filed: false`または未設定）を確認する
+3. 2つ以上のsourceがあるstubを完全記事へ育てる
+4. 既存の概念へ新情報を統合する（appendのみ、全書き換え禁止）
+5. `outputs/`の知見をconcepts/entitiesへ差分統合し、outputに`filed: true`を付与する
+6. wikilinkを補強する
+7. `wiki/index.md`を再構築する
+8. 必要な統合分析を`wiki/syntheses/`へ作る（トリガー条件は`synthesis-trigger-algorithm.md`参照）
+9. frontmatterの`date_modified`を更新する
+10. `wiki/log.md`へ記録する
 
 睡眠レポート自身はmanifest比較から除外します。compileとlintが同時に必要な場合は、compileを先に1回だけ実行します。

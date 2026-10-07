@@ -229,7 +229,7 @@ ai-brain-skill/
 ├── SKILL.md                         # Codex向け配布用skill
 ├── skill/
 │   ├── SKILL.md                     # Claude Code向け配布用skill
-│   └── references/                  # 23 micro-reference files
+│   └── references/                  # 24 micro-reference files
 ├── commands/                        # 7個のwiki-*コマンド
 ├── references/                      # Codex向け参照ファイル
 ├── scripts/

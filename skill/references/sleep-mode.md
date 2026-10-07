@@ -119,6 +119,56 @@ schedule変更、停止、uninstall、初回大量整理はHuman Gateです。sk
 
 自動整理を止めても、明示したcompileとlintは同じ安全制御で実行できます。
 
+## 止まったときの切り分け
+
+睡眠モードの検証器は、変更されたファイルを全文検査します。
+そのため、止まる原因はAIの出力ではなく、wikiに元からある書式のことが多いです。
+AIの出力本文はプライバシー契約で伏せられるので、原因は既存wikiを検査して推定します。
+
+### 手順
+
+1. `status`の`attentionAction`と、技術ログ（`%LOCALAPPDATA%\ai-brain\<vault-id>\logs\sleep-*.jsonl`）の最後の`eventCode`を確認する。
+2. 同じ`eventCode`が3回続くと`REPEATED_FAILURE_PAUSED`で止まる。原因を直す前に、同じ要求を再送しない。
+3. 既存wikiを、検証器と同じ関数で読み取り専用に検査する。
+
+```powershell
+# 読み取り専用。関数名はscriptsの版で変わりうるため、lib\AiBrain.Transaction.ps1で確認してから使う
+$lib = "<AI_BRAIN_SCRIPT_PATH>\lib"
+. "$lib\AiBrain.Common.ps1"; . "$lib\AiBrain.Transaction.ps1"
+foreach ($f in Get-ChildItem "<VAULT_PATH>\wiki" -Recurse -Filter *.md) {
+  try {
+    $c = [IO.File]::ReadAllText($f.FullName, [Text.Encoding]::UTF8)
+    $null = Test-AiBrainFrontmatter -Content (ConvertTo-AiBrainCanonicalFrontmatter -Content $c)
+  } catch { "{0}`t{1}" -f $_.Exception.Message, $f.FullName }
+}
+```
+
+4. 不合格の型を数える。1つの型に集中していれば、機械的に直せる。
+5. 直す前に、対象を`vault`の外へそのまま退避する。変更はfrontmatterの書式、または問題の記号だけにする。frontmatterだけを直す場合は本文のハッシュが変わっていないこと、本文の記号を直す場合は対象の記号以外に差分がないことを確認する。
+6. 全件を再検査して不合格が0件になってから、状態が`paused`または`attention`なら`wiki-sleep doctor`で停止を解除し、そのあと`run-now`で再実行する。ページ数が多い変更は、人の承認を得る。
+
+### 検証器が受け付ける書式
+
+- frontmatterの各行は、行頭から`key: value`で始める（配列の項目行`  - 項目`を除く）。
+- 配列は、`key:`の次の行から`  - 項目`（半角スペースでインデント）で書くか、1行の`[a, b]`で書く。行頭から`- 項目`は受け付けない。
+- 値は1行で書く。複数行にまたがる値と、`[`から`]`までを複数行に分けた配列は受け付けない。
+- 引用符・括弧・`: `・` #`を含む値は、ダブルクォートで囲む。
+- 同じキーを2回書かない（`FRONTMATTER_DUPLICATE_KEY`）。`title`・`date_modified`・`type`・`status`は必須。
+- 本文の`[[...]]`は、リンクとして検査される。中身が空、絶対パス、`..`を含む場合は`WIKILINK_INVALID`になる。説明文で記号そのものを書くときは、全角の`［［`にする。
+
+### 再実行について
+
+- 利用上限でAIが途中終了した場合は、回復後の再実行で完了済みの分割を再利用し、続きから進む。
+- 登録済みの古い要求（`requests\pending`）は、次にタスクが動くときに順に処理される。変更がなければ`COMPILE_NO_CHANGE`で短く終わる。
+- 所要時間の目安（観測値）: ソーススキャンは約10〜16分、分割1つは約2.5〜4分。大きなファイルを含む分割は20分を超えることがある。タイムアウトは90分。
+- 待機中は`CONTROL_RUNTIME_BUSY`が返ることがある。実行中の印なので、重ねて起動しない。
+
+### 根本対策の置き場
+
+AIが既存ページを変更するとき、元の書式をそのまま返すと検証で止まります。
+検証器の許容範囲を広げる、または検証に失敗したページだけを除外して続行する改善は、scripts側の課題です（YOSSII812001/ai-brain-skill#35）。
+このskillの文書では、症状の切り分けと安全な修復手順までを扱います。
+
 ## 補足
 
 - PCが停止中の時刻は処理しません。次の起動後に1回だけ追いつきます。
